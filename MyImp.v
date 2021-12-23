@@ -67,11 +67,11 @@ Section IMPLang.
     match e with
     | Const n => n
     | Var x => va $! x
-    | Unaop op e => 
+    | Unaop op e =>
       let opv := (interp_unaopkind op) in
       let ev := eval_exp va e in
       opv ev
-    | Binop op e1 e2 => 
+    | Binop op e1 e2 =>
       let opv := (interp_binopkind op) in
       let e1v := eval_exp va e1 in
       let e2v := eval_exp va e2 in
@@ -82,7 +82,7 @@ End IMPLang.
 Section Big_step.
   (* relational big step *)
   Inductive eval : valuation -> Cmd -> valuation -> Prop :=
-  | EvalDefault_Skip: forall va, 
+  | EvalDefault_Skip: forall va,
     eval va Skip va
   | EvalDefault_Assign: forall va x e ve,
     eval_exp va e = ve ->
@@ -205,8 +205,8 @@ Section Small_step.
   | (va, cmd) => cmd = Skip
   end.
 
-  Example smallstep_ex0: forall va0 va1, 
-    reachable (step_trsys_with_init va0 ex0_code) (va1, Skip) -> 
+  Example smallstep_ex0: forall va0 va1,
+    reachable (step_trsys_with_init va0 ex0_code) (va1, Skip) ->
     va1 $! "x" = va0 $! "x" + 4.
   Proof.
     unfold ex0_code.
@@ -300,42 +300,57 @@ Section Small_step.
     + constructor.
     + cases y.
       econstructor.
-      constructor. eassumption. 
+      constructor. eassumption.
       apply IHtrc; auto.
   Qed.
 
-  Theorem equiv0: forall code va va',
+  Theorem equiv_big_small: forall code va va',
     eval va code va' -> step ^* (va, code) (va', Skip).
-  Proof.
+  Proof with (try econstructor; eauto).
     induct 1; simplify.
     + econstructor.
-    + econstructor. constructor. eassumption. constructor.
-    + eapply trc_trans. apply equiv0_seq. eassumption.
+    + econstructor...
+    + eapply trc_trans. apply equiv0_seq. eauto.
       econstructor. apply Step_Seq1. assumption.
-    + econstructor. econstructor. eassumption. assumption.
-    + econstructor. apply Step_While0. equality. constructor.
+    + econstructor. econstructor. eauto. assumption.
+    + econstructor. apply Step_While0... constructor.
     + econstructor. apply Step_While1. equality.
-      eapply trc_trans. apply equiv0_seq. eassumption. 
+      eapply trc_trans. apply equiv0_seq. eauto.
       econstructor. apply Step_Seq1. assumption.
-    + econstructor. constructor. auto. constructor.
-    + econstructor. constructor. auto. constructor.
+    + econstructor...
+    + econstructor...
   Qed.
 
-  Lemma equiv1_one: forall code code' va va' va'',
+(* CONFUSED: where does these all JMeq come from? *)
+
+  Lemma equiv_small_big_one: forall code code' va va',
     step (va, code) (va', code') ->
-    eval va' code' va'' ->
-    eval va code va''.
-  Proof.
-
+    forall va'', eval va' code' va'' ->
+      eval va code va''.
+  Proof with (try econstructor; eauto).
+    induct 1; simplify.
+    + invert H...
+    + invert H0. apply IHstep in H4...
+    + econstructor...
+    + idtac...
+    + invert H0...
+    + invert H0...
+    + invert H0...
+    + invert H...
   Qed.
 
-  Theorem equiv1: forall code va va',
+  Theorem equiv_small_big: forall code va va',
     step^* (va, code) (va', Skip) -> eval va code va'.
   Proof.
-   
+    induct 1; simplify.
+    econstructor.
+
+    cases y.
+    eapply equiv_small_big_one.
+    eassumption.
+    eapply IHtrc; auto.
   Qed.
 End Small_step.
-
 
 Section Unused.
 

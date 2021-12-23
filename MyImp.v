@@ -170,33 +170,28 @@ Section Small_step.
   | Step_Assign: forall va x e ve,
     eval_exp va e = ve ->
     step (va, (Assign x e)) (va $+ (x, ve), Skip)
-  | Step_Seq0: forall va va' c0 c0' c1,
+  | Step_Seq0: forall va c1,
+    step (va, (Seq Skip c1)) (va, c1)
+  | Step_Seq1: forall va va' c0 c0' c1,
     step (va, c0) (va', c0') ->
     step (va, (Seq c0 c1)) (va', (Seq c0' c1))
-  | Step_Seq1: forall va c1,
-    step (va, (Seq Skip c1)) (va, c1)
   | Step_If: forall va be bev th el,
     eval_exp va be = bev ->
     step (va, (If be th el)) (va, if nat_to_bool bev then th else el)
-  | Step_While1: forall va be inv body,
-    nat_to_bool (eval_exp va be) = true ->
-    step (va, (While inv be body)) (va, Seq body (While inv be body))
   | Step_While0: forall va be inv body,
     nat_to_bool (eval_exp va be) = false ->
     step (va, (While inv be body)) (va, Skip)
+  | Step_While1: forall va be inv body,
+    nat_to_bool (eval_exp va be) = true ->
+    step (va, (While inv be body)) (va, Seq body (While inv be body))
   | Step_Assert: forall va (a : hassertion),
     a va ->
     step (va, (Assert a)) (va, Skip)
   | Step_Assume: forall va (a : hassertion),
     step (va, (Assume a)) (va, Skip).
 
-  Definition same_step_state (vac : step_state) (vac' : step_state) :=
-  match vac, vac' with
-  | (va, cmd), (va', cmd') => va = va' /\ cmd = cmd'
-  end.
-
   Definition step_trsys_with_init (va : valuation) (code : Cmd) : trsys step_state := {|
-    Initial := same_step_state (va, code);
+    Initial := fun x => x = (va, code);
     Step := step;
   |}.
 
@@ -352,9 +347,194 @@ Section Small_step.
   Qed.
 End Small_step.
 
+Section Small_cps.
+(*
+ * Continuation passing style. Most code inspired by compilerverif.
+ *
+ * CPS semantics is also small-step semantics with state (va, c, k).
+ *  va is the current program store (valuation), c is the focused command, k is the remaining continuation.
+ *
+ * Transitions can be classified into
+ *   + computation: may update va according to c; 'simplifies' c (structurally or semantically); does not change k.
+ *   + focusing: move command from c to k, make c simpler and k less simpler; does not change va.
+ *   + resumption: move command from k to c, usually when c is done e.g. Skip; does not change va.
+ *
+ *  Why do we need a Kwhile than replacing it with Kseq (While...)? Still problematic.
+ *    Maybe because we do not want each c to contain loops.
+ *    So this resembles more the execution process? (series of loop-less basic blocks DAGs)
+ *  I tried to do that but when a (While..) comes into the c position, this semantics do not seem much different than naive small step.
+ *)
+  Inductive Cont :=
+  | Cont_Stop
+  | Cont_Seq (c : Cmd) (k : Cont)
+  | Cont_While (inv : hassertion) (be : Exp) (body : Cmd) (k : Cont).
+
+(* Note that cmd can be while.
+   And Cont will have nested Whiles. (the level of iterations)
+ *)
+  Definition cps_state := (valuation * Cmd * Cont)%type.
+
+(* A continuation basically denotes remaining computation, which can be compiled to code *)
+  Fixpoint cont_denote_cmd (k : Cont) : Cmd :=
+    match k with
+    | Cont_Stop => Skip
+    | Cont_Seq c k => Seq c (cont_denote_cmd k)
+    | Cont_While inv be body k => Seq (While inv be body) (cont_denote_cmd k)
+    end.
+
+(* What is the code for computation, when the focused command is c and continuation is k? i.e execute c first then k.
+   Naively we can use (Seq c (cont_denote_cmd k)), but this is another option. *)
+  Fixpoint cont_apply (c : Cmd) (k : Cont) : Cmd :=
+    match k with
+    | Cont_Stop => c
+    | Cont_Seq c1 k => cont_apply (Seq c c1) k
+    | Cont_While inv be body k => cont_apply (Seq c (While inv be body)) k
+    end.
+
+  Inductive cps_step : cps_state -> cps_state -> Prop :=
+  (* computation *)
+  | CpsStep_Assign: forall va x e ve k,
+    eval_exp va e = ve ->
+    cps_step (va, (Assign x e), k) (va $+ (x, ve), Skip, k)
+  | CpsStep_If: forall va be bev th el k,
+    eval_exp va be = bev ->
+    cps_step (va, (If be th el), k) (va, if nat_to_bool bev then th else el, k)
+  | CpsStep_While0: forall va inv be body k,
+    nat_to_bool (eval_exp va be) = false ->
+    cps_step (va, (While inv be body), k) (va, Skip, k)
+  (* resumption *)
+  | CpsStep_SkipSeq: forall va c k,
+    cps_step (va, Skip, Cont_Seq c k) (va, c, k)
+  | CpsStep_SkipWhile: forall va inv be body k,
+    cps_step (va, Skip, Cont_While inv be body k) (va, While inv be body, k)
+  (* focusing *)
+  | CpsStep_Seq1: forall va c0 c1 k,
+    cps_step (va, (Seq c0 c1), k) (va, c0, Cont_Seq c1 k)
+  | CpsStep_While1: forall va inv be body k,
+    nat_to_bool (eval_exp va be) = true ->
+    cps_step (va, (While inv be body), k) (va, body, Cont_While inv be body k). (* this one has computation too *)
+
+
+  Definition cps_step_trsys_with_init (va : valuation) (code : Cmd) : trsys cps_state := {|
+    Initial := fun x => x = (va, code, Cont_Stop);
+    Step := cps_step;
+  |}.
+
+  Definition term_cps_step_state (x : cps_state) :=
+  match x with
+  | (va, cmd, k) => cmd = Skip /\ k = Cont_Stop
+  end.
+
+  Example cps_ex0: forall va0 va1,
+    reachable (cps_step_trsys_with_init va0 ex0_code) (va1, Skip, Cont_Stop) ->
+    va1 $! "x" = va0 $! "x" + 4.
+  Proof.
+    unfold ex0_code; simplify.
+
+    invert H. simplify. invert H0.
+    (* up are initial *)
+
+    invert H1. invert H.
+    invert H0. invert H.
+    invert H1. invert H.
+    invert H0. invert H; simplify.
+      invert H7.
+
+    invert H1. invert H.
+    invert H0. invert H.
+    invert H1. invert H.
+    invert H0. invert H.
+    invert H1. invert H.
+    invert H0. invert H; simplify.
+      invert H8.
+
+    invert H1. invert H.
+    invert H0. invert H.
+    invert H1. invert H.
+    invert H0. invert H.
+    invert H1. invert H.
+    invert H0. invert H; simplify.
+
+    invert H1.
+      simplify. lia.
+      invert H.
+    invert H9.
+  Restart.
+    Ltac cps_step_invert_one :=
+      repeat match goal with
+      | [ H : cps_step _ _ |- _ ] => invert H
+      end; simplify.
+
+    Ltac cps_step_one :=
+      match goal with
+      | [ H : cps_step^* _ _ |- _ ] => invert H
+      end;
+      repeat cps_step_invert_one;
+      simplify.
+
+    Ltac cps_step_while :=
+      cps_step_one;
+      match goal with
+      | [ H : nat_to_bool _ = _ |- _ ] => try invert H
+      end.
+    (* These Ltacs are basically the same as smallstep's *)
+
+    unfold ex0_code; simplify.
+
+    invert H. simplify. invert H0.
+    (* up are initial *)
+
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_while.
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_while.
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_one.
+    cps_step_while.
+    cps_step_one.
+    lia.
+  Qed.
+
+  (* Defined as inductive so we can `invert` on it. *)
+  Inductive cps_relate_small : cps_state -> step_state -> Prop :=
+  | Relate_Cps_Small: forall va va' code k code',
+    va' = va ->
+    code' = cont_apply code k ->
+    cps_relate_small (va, code, k) (va', code').
+
+  (* similar to stepwise refinement *)
+  Lemma cps_step_relate: forall cs ss cs' ss',
+    cps_relate_small cs ss ->
+    cps_step cs cs' ->
+    step ss ss' ->
+    cps_relate_small cs' ss'.
+  Proof.
+    destruct cs; destruct ss; destruct cs'; destruct ss'.
+    induct 2; simplify.
+    - invert H. invert H0.
+  Abort.
+
+  Theorem equiv_cps_small: forall code va k va',
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
+    step^* (va, cont_apply code k) (va', Skip).
+  Proof.
+
+  Abort.
+End Small_cps.
+
 Section Unused.
 
   (* example: how to do fmap normalization *)
-  assert ((va $+ ("n", 2) $+ ("x", va $! "x" + 2) $+ ("n", 1)) = (va $+ ("n", 1) $+ ("x", va $! "x" + 2)))
-  by maps_equal.
+  Goal forall va, ((va $+ ("n", 2) $+ ("x", va $! "x" + 2) $+ ("n", 1)) = (va $+ ("n", 1) $+ ("x", va $! "x" + 2))).
+  intros. maps_equal. Qed.
+
 End Unused.

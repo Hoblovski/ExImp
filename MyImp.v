@@ -204,43 +204,7 @@ Section Small_step.
     reachable (step_trsys_with_init va0 ex0_code) (va1, Skip) ->
     va1 $! "x" = va0 $! "x" + 4.
   Proof.
-    unfold ex0_code.
-    simplify.
-
-    invert H.
-    simplify. destruct st0. invert H0.
-    (* up are initial *)
-
-    invert H1. destruct y.
-    invert H. invert H2.
-    invert H0. destruct y.
-
-    invert H.
-    invert H2.
-    invert H1. invert H.
-    - simplify. clear H6.
-      invert H0. destruct y.
-      invert H. invert H1. destruct y.
-      invert H2. invert H3. invert H.
-      invert H2. invert H1.
-      invert H0. invert H. invert H5.
-      invert H1. simplify.
-      invert H. invert H5.
-      invert H0. invert H.
-      + simplify.  clear H6.
-        invert H1. invert H. invert H5. invert H1.
-        invert H0. invert H. simplify.
-        invert H5. invert H0.
-        invert H1. invert H. invert H5. invert H0.
-        invert H. simplify. invert H5.
-        invert H1. invert H.
-        * simplify. invert H6.
-        * simplify. clear H6.
-          invert H0.
-          { simplify. lia. }
-          { invert H. }
-      + simplify. invert H6.
-    - simplify. invert H6.
+    (* manual proof *)
   Restart.
 
   Ltac step_invert_one :=
@@ -306,12 +270,12 @@ Section Small_step.
     + econstructor.
     + econstructor...
     + eapply trc_trans. apply equiv0_seq. eauto.
-      econstructor. apply Step_Seq1. assumption.
+      econstructor. apply Step_Seq0. assumption.
     + econstructor. econstructor. eauto. assumption.
     + econstructor. apply Step_While0... constructor.
     + econstructor. apply Step_While1. equality.
       eapply trc_trans. apply equiv0_seq. eauto.
-      econstructor. apply Step_Seq1. assumption.
+      econstructor. apply Step_Seq0. assumption.
     + econstructor...
     + econstructor...
   Qed.
@@ -325,8 +289,8 @@ Section Small_step.
   Proof with (try econstructor; eauto).
     induct 1; simplify.
     + invert H...
-    + invert H0. apply IHstep in H4...
     + econstructor...
+    + invert H0. apply IHstep in H4...
     + idtac...
     + invert H0...
     + invert H0...

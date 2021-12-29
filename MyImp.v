@@ -142,6 +142,7 @@ Module Big_step.
     simplify; repeat (match goal with
     | [ H: eval _ (Assign _ _) _ |- _ ] => invert H
     | [ H: eval _ (Seq _ _) _ |- _ ] => invert H
+    | [ H: eval _ (Skip) _ |- _ ] => invert H
     end; simplify).
 
   Ltac bs_while :=
@@ -363,27 +364,6 @@ Module Small_cps.
  *)
   Definition cps_state := (valuation * Cmd * Cont)%type.
 
-(* A continuation basically denotes remaining computation, which can be compiled to code *)
-  Fixpoint cont_denote_cmd (k : Cont) : Cmd :=
-    match k with
-    | Cont_Stop => Skip
-    | Cont_Seq c k => Seq c (cont_denote_cmd k)
-    | Cont_While inv be body k => Seq (While inv be body) (cont_denote_cmd k)
-    end.
-
-(* What is the code for computation, when the focused command is c and continuation is k? i.e execute c first then k.
-   Naively we can use (Seq c (cont_denote_cmd k)), but this is another option.
-
-   Original impl:
-      match k with
-      | Cont_Stop => c
-      | Cont_Seq c1 k => cont_apply (Seq c c1) k
-      | Cont_While inv be body k => cont_apply (Seq c (While inv be body)) k
-      end.
-   The above code is not composable. Maybe Seq with cont_denote_cmd is a better choice. *)
-  Definition cont_apply (c : Cmd) (k : Cont) : Cmd :=
-    Seq c (cont_denote_cmd k).
-
   Inductive cps_step : cps_state -> cps_state -> Prop :=
   (* computation *)
   | CpsStep_Assign: forall va x e ve k,
@@ -547,7 +527,7 @@ Module Small_cps.
          *)
   Abort.
 
-  Lemma big_to_cps_anyctx: forall code va va',
+  Lemma big_to_cps_codeonly: forall code va va',
     eval va code va' -> forall k,
     cps_step^* (va, code, k) (va', Skip, k).
   Proof with (repeat (try eassumption; econstructor)).
@@ -566,28 +546,76 @@ Module Small_cps.
     - idtac...
   Qed.
 
-  Lemma big_to_cps_cont: forall k va va',
-    eval va (cont_denote_cmd k) va' ->
-    cps_step^* (va, Skip, k) (va', Skip, Cont_Stop).
-  Proof.
-    induct 1; simplify.
-    - admit.
-    - admit.
-  Abort.
+(* Now comes the execution of continuations.
+   In an earlier proof I did for compilerverif I defined a big-step semantics for continuations.
+   Here I use a denotational approach: convert a continuation into the corresponding command.
+   > A continuation basically denotes remaining computation, which can be compiled to commands
+*)
 
-  Lemma cps_to_big_one: forall va0 va1 c0 c1 k0 k1,
-    cps_step (va0, c0, k0) (va1, c1, k1) ->
-    forall va2, eval va1 c1 va2 ->
-      eval va0 c0 va2.
-  Abort.
+  Fixpoint cont_denote_cmd (k : Cont) : Cmd :=
+    match k with
+    | Cont_Stop => Skip
+    | Cont_Seq c k => Seq c (cont_denote_cmd k)
+    | Cont_While inv be body k => Seq (While inv be body) (cont_denote_cmd k)
+    end.
+
+(* The above denotation function gives semantics to continuations.
+   Yet for CPS (va, c, k) we need to include the semantics of c as well.
+   The remaining computation is something like $c \oplus k$.
+
+   Naively we can use `(Seq c (cont_denote_cmd k))`.
+   Yet it poses challenge for subsequent proofs, because we need $cont_apply c Cont_Stop = c$ (see later comments).
+   Therefore we define another version, and prove it's equivalent to `(Seq c (cont_denote_cmd k))`.
+    It is really genius insight.
+*)
+
+  Fixpoint cont_apply (c : Cmd) (k : Cont) : Cmd :=
+      match k with
+      | Cont_Stop => c
+      | Cont_Seq c1 k => cont_apply (Seq c c1) k
+      | Cont_While inv be body k => cont_apply (Seq c (While inv be body)) k
+      end.
+
+  (* `cont_apply c k` is equivalent to `(Seq c (cont_denote_cmd k))` for big-step execution. *)
+  Lemma cont_apply_split: forall k c va0 va1,
+    eval va0 (cont_apply c k) va1 <->
+    eval va0 (Seq c (cont_denote_cmd k)) va1.
+  Proof with (repeat (try eassumption; econstructor)).
+    split; induct k; simplify.
+    - idtac...
+    - apply IHk in H. bs_simple...
+    - apply IHk in H. bs_simple...
+    - bs_simple...
+    - bs_simple. apply IHk...
+    - bs_simple. apply IHk...
+  Qed.
+
+  Lemma big_to_cps_cont: forall k c va va',
+    eval va (cont_apply c k) va' ->
+    cps_step^* (va, c, k) (va', Skip, Cont_Stop).
+  Proof.
+    induct k; simplify.
+    - apply big_to_cps_codeonly. auto.
+    - pose proof (IHk _ _ _ H).
+      rewrite cont_apply_split in H.
+      bs_simple.
+      eapply trc_trans. apply big_to_cps_codeonly. eauto.
+      econstructor. econstructor.
+      eapply trc_trans. apply big_to_cps_codeonly. eauto.
+      apply IHk. rewrite cont_apply_split. econstructor. econstructor. auto.
+    - pose proof (IHk _ _ _ H).
+      rewrite cont_apply_split in H.
+      bs_simple.
+      eapply trc_trans. apply big_to_cps_codeonly. eauto.
+      econstructor. econstructor.
+      eapply trc_trans. apply big_to_cps_codeonly. eauto.
+      apply IHk. rewrite cont_apply_split. econstructor. econstructor. auto.
+  Qed.
 
   Theorem cps_to_big: forall code va va',
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
     eval va code va'.
   Proof.
-    induct 1; simplify.
-    econstructor.
-
   Abort.
 End Small_cps.
 
@@ -600,6 +628,10 @@ Module Unused.
 End Unused.
 
 Module Failed.
+  Import IMPLang Big_step Small_step Small_cps.
+  Ltac ec := econstructor.
+  Ltac ea := eassumption.
+
   (* try prove CPS reduction like a frame rule: before we're done with the current c, we wont touch the k. *)
   Lemma cps_local_exec_fail: forall c0 va0 va2 k0,
     cps_step^* (va0, c0, k0) (va2, Skip, Cont_Stop) ->
@@ -647,38 +679,6 @@ Module Failed.
     cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
     cps_step^* (va, (cont_apply code k), Cont_Stop) (va', Skip, Cont_Stop).
   Proof.
-    induct 1; simplify.
-
-    { cbv. repeat (try ea; ec). }
-
-    cases y. cases p.
-
-    rename c into k1. rename va' into va2. rename c0 into c1. rename v into va1. rename k into k0.
-    rename code into c0. rename va into va0.
-
-    (* make IHtrc less verbose *)
-    assert (cps_step^* (va1, cont_apply c1 k1, Cont_Stop) (va2, Skip, Cont_Stop)). {
-      apply IHtrc.
-      reflexivity. reflexivity.
-    } clear IHtrc. rename H1 into IHtrc.
-
-    invert H; simplify; unfold cont_apply in *.
-    - invert IHtrc. invert H. invert H1. invert H.
-      repeat (try ea; ec).
-    - invert IHtrc. invert H.
-      repeat (try ea; ec).
-    - invert IHtrc. invert H. invert H1. invert H.
-      repeat (try ea; ec).
-    - invert IHtrc. invert H. invert H1. invert H.
-      repeat (try ea; ec).
-    - invert IHtrc. invert H. invert H1. invert H.
-      repeat (try ea; ec).
-    - invert IHtrc. invert H.
-      repeat (try ea; ec).
-    - invert IHtrc. invert H.
-      repeat (try ea; ec).
-    - (* focus seq *)
-      invert IHtrc. invert H.
   Abort.
 
   Lemma cps_multistep_kctx: forall code va va' k1,

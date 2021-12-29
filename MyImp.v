@@ -4,7 +4,7 @@ Require Import List Lia.
 (* All variables are by default initialized to 0 *)
 Notation "m $! k" := (match m $? k with Some n => n | None => O end) (at level 30).
 
-Section IMPLang.
+Module IMPLang.
   Notation Value := nat.
 
   Inductive BinopKind :=
@@ -79,7 +79,9 @@ Section IMPLang.
     end.
 End IMPLang.
 
-Section Big_step.
+Module Big_step.
+  Import IMPLang.
+
   (* relational big step *)
   Inductive eval : valuation -> Cmd -> valuation -> Prop :=
   | EvalDefault_Skip: forall va,
@@ -163,7 +165,8 @@ Section Big_step.
 
 End Big_step.
 
-Section Small_step.
+Module Small_step.
+  Import IMPLang Big_step.
   Definition step_state := (valuation * Cmd)%type.
 
   Inductive step : step_state -> step_state -> Prop :=
@@ -250,7 +253,7 @@ Section Small_step.
     invert H.
   Qed.
 
-  Lemma equiv0_seq: forall va c1 c1' c2 va',
+  Lemma multistep_seqctx: forall va c1 c1' c2 va',
     step^* (va, c1) (va', c1') ->
     step^* (va, Seq c1 c2) (va', Seq c1' c2).
   Proof.
@@ -263,26 +266,26 @@ Section Small_step.
       apply IHtrc; auto.
   Qed.
 
-  Theorem equiv_big_small: forall code va va',
+  Theorem big_to_small: forall code va va',
     eval va code va' -> step ^* (va, code) (va', Skip).
   Proof with (try econstructor; eauto).
     induct 1; simplify.
     + econstructor.
     + econstructor...
-    + eapply trc_trans. apply equiv0_seq. eauto.
-      econstructor. apply Step_Seq0. assumption.
+    + eapply trc_trans. apply multistep_seqctx. eauto.
+      econstructor. econstructor. assumption.
     + econstructor. econstructor. eauto. assumption.
     + econstructor. apply Step_While0... constructor.
     + econstructor. apply Step_While1. equality.
-      eapply trc_trans. apply equiv0_seq. eauto.
-      econstructor. apply Step_Seq0. assumption.
+      eapply trc_trans. apply multistep_seqctx. eauto.
+      econstructor. econstructor. assumption.
     + econstructor...
     + econstructor...
   Qed.
 
 (* CONFUSED: where does these all JMeq come from? *)
 
-  Lemma equiv_small_big_one: forall code code' va va',
+  Lemma small_to_big_one: forall code code' va va',
     step (va, code) (va', code') ->
     forall va'', eval va' code' va'' ->
       eval va code va''.
@@ -298,20 +301,42 @@ Section Small_step.
     + invert H...
   Qed.
 
-  Theorem equiv_small_big: forall code va va',
+  Theorem small_to_big: forall code va va',
     step^* (va, code) (va', Skip) -> eval va code va'.
   Proof.
     induct 1; simplify.
     econstructor.
 
     cases y.
-    eapply equiv_small_big_one.
+    eapply small_to_big_one.
     eassumption.
     eapply IHtrc; auto.
   Qed.
+
+  Theorem equiv_big_small: forall code va va',
+    eval va code va' <-> step^* (va, code) (va', Skip).
+  Proof.
+    split. apply big_to_small. apply small_to_big.
+  Qed.
+
+  (* Example of utilizing composability of big step semantics.
+     You'll have pain trying to prove it without the small to big conversion. *)
+  Example bigstep_composability: forall va0 va2 c0 c1 c2 c3,
+    step^* (va0, Seq c0 (Seq (Seq c1 c2) c3)) (va2, Skip) ->
+    exists va1,
+      step^* (va0, Seq c0 c1) (va1, Skip) /\ step^* (va1, Seq c2 c3) (va2, Skip).
+  Proof.
+    intros.
+    rewrite <- equiv_big_small in *.
+    invert H. invert H5. invert H2.
+    exists va5; split;
+    rewrite <- equiv_big_small in *;
+    econstructor; eauto.
+  Qed.
 End Small_step.
 
-Section Small_cps.
+Module Small_cps.
+  Import IMPLang Big_step Small_step.
 (*
  * Continuation passing style. Most code inspired by compilerverif.
  *
@@ -347,13 +372,17 @@ Section Small_cps.
     end.
 
 (* What is the code for computation, when the focused command is c and continuation is k? i.e execute c first then k.
-   Naively we can use (Seq c (cont_denote_cmd k)), but this is another option. *)
-  Fixpoint cont_apply (c : Cmd) (k : Cont) : Cmd :=
-    match k with
-    | Cont_Stop => c
-    | Cont_Seq c1 k => cont_apply (Seq c c1) k
-    | Cont_While inv be body k => cont_apply (Seq c (While inv be body)) k
-    end.
+   Naively we can use (Seq c (cont_denote_cmd k)), but this is another option.
+
+   Original impl:
+      match k with
+      | Cont_Stop => c
+      | Cont_Seq c1 k => cont_apply (Seq c c1) k
+      | Cont_While inv be body k => cont_apply (Seq c (While inv be body)) k
+      end.
+   The above code is not composable. Maybe Seq with cont_denote_cmd is a better choice. *)
+  Definition cont_apply (c : Cmd) (k : Cont) : Cmd :=
+    Seq c (cont_denote_cmd k).
 
   Inductive cps_step : cps_state -> cps_state -> Prop :=
   (* computation *)
@@ -366,6 +395,11 @@ Section Small_cps.
   | CpsStep_While0: forall va inv be body k,
     nat_to_bool (eval_exp va be) = false ->
     cps_step (va, (While inv be body), k) (va, Skip, k)
+  | CpsStep_Assert: forall va (a : hassertion) k,
+    a va ->
+    cps_step (va, (Assert a), k) (va, Skip, k)
+  | CpsStep_Assume: forall va (a : hassertion) k,
+    cps_step (va, (Assume a), k) (va, Skip, k)
   (* resumption *)
   | CpsStep_SkipSeq: forall va c k,
     cps_step (va, Skip, Cont_Seq c k) (va, c, k)
@@ -468,37 +502,189 @@ Section Small_cps.
     lia.
   Qed.
 
-  (* Defined as inductive so we can `invert` on it. *)
-  Inductive cps_relate_small : cps_state -> step_state -> Prop :=
-  | Relate_Cps_Small: forall va va' code k code',
-    va' = va ->
-    code' = cont_apply code k ->
-    cps_relate_small (va, code, k) (va', code').
+(* What challenge will there be if we prove cps_step equivalent to small-step?
 
-  (* similar to stepwise refinement *)
-  Lemma cps_step_relate: forall cs ss cs' ss',
-    cps_relate_small cs ss ->
-    cps_step cs cs' ->
-    step ss ss' ->
-    cps_relate_small cs' ss'.
-  Proof.
-    destruct cs; destruct ss; destruct cs'; destruct ss'.
-    induct 2; simplify.
-    - invert H. invert H0.
+   Basically proving equivalence for two TS, we need a equivalence relation.
+   And that means a equivalence relation of   cont_apply c k ~ c.
+   Note it's a equivalence not equality because structural differences matter the latter but not latter.
+
+   Also we do not have a simple lock-step refinement i.e.
+     [Lock-step refinement] cs ~ ss  ->  cps_step cs cs'  ->  step ss ss'  ->  cs' ~ ss'.
+   It is too strong.
+   Take the focusing & resumption cps steps for example, they are stuttering steps for small-step.
+
+   And program equivalence itself is quite a challenge. So we chose to prove cps_step ~ eval.
+*)
+
+  Lemma big_to_cps_kstop_fail: forall code va va',
+    eval va code va' ->
+    cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop).
+  Proof with (repeat (try eassumption; econstructor)).
+    induct 1; simplify.
+    - idtac...
+    - idtac...
+    - eapply trc_trans.
+      + eapply TrcFront...
+      + (* cannot go from here
+            We want
+                        (va0, c0, Cont_Seq c1 Cont_Stop)
+                    ~>* (va2, Skip, Cont_Stop)
+            Which is clear by the derivation
+                        (va0, c0, Cont_Seq c1 Cont_Stop)
+                    ~>* (va1, Skip, Cont_Seq c1 Cont_Stop)  [ by induction ] <***>
+                    ~>  (va1, c1, Cont_Stop)                [ by resumption constructor ]
+                    ~>* (va2, Skip, Cont_Stop)              [ by induction i.e. IHeval2 ]
+            But the step <***> fails: the induction hypothesis only gives
+                        (va0, c0, Cont_Stop)
+                    ~>* (va1, Skip, Cont_Stop)              [ actual induction hypothesis ]
+            The problem arises because we have a too weak hypothesis, imagine a
+                    forall k,
+                        (va0, c0, k)
+                    ~>* (va1, Skip, k)
+            Would do.
+
+            So we universally quantify the continuation
+         *)
   Abort.
 
-  Theorem equiv_cps_small: forall code va k va',
-    cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
-    step^* (va, cont_apply code k) (va', Skip).
+  Lemma big_to_cps_anyctx: forall code va va',
+    eval va code va' -> forall k,
+    cps_step^* (va, code, k) (va', Skip, k).
+  Proof with (repeat (try eassumption; econstructor)).
+    induct 1; simplify.
+    - idtac...
+    - idtac...
+    - eapply trc_trans.
+      + eapply TrcFront. econstructor. apply IHeval1.
+      + econstructor. econstructor. eapply IHeval2.
+    - econstructor. econstructor. econstructor. rewrite H. apply IHeval.
+    - idtac... equality.
+    - eapply trc_trans.
+      + eapply TrcFront. apply CpsStep_While1. equality. apply IHeval1.
+      + econstructor. econstructor. apply IHeval2.
+    - idtac...
+    - idtac...
+  Qed.
+
+  Lemma big_to_cps_cont: forall k va va',
+    eval va (cont_denote_cmd k) va' ->
+    cps_step^* (va, Skip, k) (va', Skip, Cont_Stop).
   Proof.
+    induct 1; simplify.
+    - admit.
+    - admit.
+  Abort.
+
+  Lemma cps_to_big_one: forall va0 va1 c0 c1 k0 k1,
+    cps_step (va0, c0, k0) (va1, c1, k1) ->
+    forall va2, eval va1 c1 va2 ->
+      eval va0 c0 va2.
+  Abort.
+
+  Theorem cps_to_big: forall code va va',
+    cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
+    eval va code va'.
+  Proof.
+    induct 1; simplify.
+    econstructor.
 
   Abort.
 End Small_cps.
 
-Section Unused.
+Module Unused.
 
   (* example: how to do fmap normalization *)
   Goal forall va, ((va $+ ("n", 2) $+ ("x", va $! "x" + 2) $+ ("n", 1)) = (va $+ ("n", 1) $+ ("x", va $! "x" + 2))).
   intros. maps_equal. Qed.
 
 End Unused.
+
+Module Failed.
+  (* try prove CPS reduction like a frame rule: before we're done with the current c, we wont touch the k. *)
+  Lemma cps_local_exec_fail: forall c0 va0 va2 k0,
+    cps_step^* (va0, c0, k0) (va2, Skip, Cont_Stop) ->
+    exists va1,
+      cps_step^* (va0, c0, k0) (va1, Skip, k0) /\
+      cps_step^* (va1, Skip, k0) (va2, Skip, Cont_Stop).
+  Proof.
+    induct c0; simplify.
+    - eexists. split.
+      ec. auto.
+    - invert H. invert H0.
+      eexists. split.
+      ec. ec. ec. ec. auto.
+    - rename c0_1 into c0; rename c0_2 into c1.
+      invert H. invert H0. apply IHc0_1 in H1. cases H1. cases H.
+      invert H0. invert H1. apply IHc0_2 in H2. cases H2. cases H0.
+      rename x into va10. rename x0 into va11. rename va2 into va3.
+      eexists. split.
+      ec. ec. eapply trc_trans. ea. ec. ec. ea. ea.
+    - rename c0_1 into th; rename c0_2 into el.
+      invert H. invert H0. cases (nat_to_bool (eval_exp va0 be)).
+      + apply IHc0_1 in H1. cases H1. cases H.
+        eexists. ec. ec. ec. ec. rewrite Heq. ea. ea.
+      + apply IHc0_2 in H1. cases H1. cases H.
+        eexists. ec. ec. ec. ec. rewrite Heq. ea. ea.
+    - rename c0 into body.
+      (* this subgoal we have problems *)
+      invert H. invert H0; simplify.
+      + (* while not taken *)
+        eexists. split.
+        ec. ec. ea. ec. ea.
+      + apply IHc0 in H1. cases H1. cases H.
+        rename x into va1. eexists. split.
+        ec. apply CpsStep_While1. ea.
+        (* cannot go from here.
+            We want to prove      (va0, body, Cont_While inv be body k0) ~>* (?va1, Skip, k0)
+            But we have by IH     (va0, body, Cont_While inv be body k0) ~>* ( va1, Skip, Cont_While inv be body k0)
+            The latter is just one iteration but the former is many iterations.
+
+            The problem is on the induction hypothesis...
+         *)
+    Abort.
+
+  Lemma cps_expand_cont: forall k va va' code,
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
+    cps_step^* (va, (cont_apply code k), Cont_Stop) (va', Skip, Cont_Stop).
+  Proof.
+    induct 1; simplify.
+
+    { cbv. repeat (try ea; ec). }
+
+    cases y. cases p.
+
+    rename c into k1. rename va' into va2. rename c0 into c1. rename v into va1. rename k into k0.
+    rename code into c0. rename va into va0.
+
+    (* make IHtrc less verbose *)
+    assert (cps_step^* (va1, cont_apply c1 k1, Cont_Stop) (va2, Skip, Cont_Stop)). {
+      apply IHtrc.
+      reflexivity. reflexivity.
+    } clear IHtrc. rename H1 into IHtrc.
+
+    invert H; simplify; unfold cont_apply in *.
+    - invert IHtrc. invert H. invert H1. invert H.
+      repeat (try ea; ec).
+    - invert IHtrc. invert H.
+      repeat (try ea; ec).
+    - invert IHtrc. invert H. invert H1. invert H.
+      repeat (try ea; ec).
+    - invert IHtrc. invert H. invert H1. invert H.
+      repeat (try ea; ec).
+    - invert IHtrc. invert H. invert H1. invert H.
+      repeat (try ea; ec).
+    - invert IHtrc. invert H.
+      repeat (try ea; ec).
+    - invert IHtrc. invert H.
+      repeat (try ea; ec).
+    - (* focus seq *)
+      invert IHtrc. invert H.
+  Abort.
+
+  Lemma cps_multistep_kctx: forall code va va' k1,
+    cps_step^* (va, code, k1) (va', Skip, k1) -> forall k2,
+    cps_step^* (va, code, k2) (va', Skip, k2).
+  Proof.
+  Abort.
+
+End Failed.

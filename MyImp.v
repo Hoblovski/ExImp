@@ -28,19 +28,14 @@ Module IMPLang.
   (* None means unitialized *)
   Definition valuation := fmap var Value.
 
-  Definition hassertion := valuation -> Prop.
-
-  Definition tauto_hassertion := fun (va : valuation) => True.
-  Definition contra_hassertion := fun (va : valuation) => False.
-
   Inductive Cmd :=
   | Skip
   | Assign (x : var) (e : Exp)
   | Seq (c1 c2 : Cmd)
   | If (be : Exp) (th el : Cmd)
-  | While (inv : hassertion) (be : Exp) (body : Cmd)
-  | Assert (a : hassertion)
-  | Assume (a : hassertion).
+  | While (be : Exp) (body : Cmd)
+  | Assert (a : valuation -> bool)
+  | Assume (a : valuation -> bool).
 
   Definition to_bool {A B} (s : sumbool A B) := if s then true else false.
 
@@ -77,6 +72,16 @@ Module IMPLang.
       let e2v := eval_exp va e2 in
       opv e1v e2v
     end.
+
+  Coercion Const : nat >-> Exp.
+  Coercion Var : string >-> Exp.
+  Example ex0_code :=
+    (Seq
+      (Assign "n" 2)
+      (While (Unaop Lnot (Binop Eq 0 "n"))
+        (Seq
+          (Assign "x" (Binop Plus "x" 2))
+          (Assign "n" (Binop Minus "n" 1))))).
 End IMPLang.
 
 Module Big_step.
@@ -97,42 +102,21 @@ Module Big_step.
     eval_exp va0 be = bev ->
     eval va0 (if (nat_to_bool bev) then th else el) va1 ->
     eval va0 (If be th el) va1
-  | Eval_While0: forall va0 inv be bev body,
-    eval_exp va0 be = bev ->
-    nat_to_bool bev = false ->
-    eval va0 (While inv be body) va0
-  | Eval_While1: forall va0 va1 va2 inv be bev body,
-    eval_exp va0 be = bev ->
-    nat_to_bool bev = true ->
+  | Eval_While0: forall va0 be body,
+    nat_to_bool (eval_exp va0 be) = false ->
+    eval va0 (While be body) va0
+  | Eval_While1: forall va0 va1 va2 be body,
+    nat_to_bool (eval_exp va0 be) = true ->
     eval va0 body va1 ->
-    eval va1 (While inv be body) va2 ->
-    eval va0 (While inv be body) va2
-  | Eval_Assert: forall va0 (a : hassertion),
-    a va0 ->
+    eval va1 (While be body) va2 ->
+    eval va0 (While be body) va2
+  | Eval_Assert: forall va0 a,
+    a va0 = true ->
     eval va0 (Assert a) va0
   (* Assume behave like no-ops *)
   | Eval_Assume: forall va0 a,
     eval va0 (Assume a) va0.
-  Check tauto_hassertion.
 
-  Example bigstep_ex0_code' :=
-    (Seq
-      (Assign "n" (Const 2))
-      (While tauto_hassertion (Unaop Lnot (Binop Eq (Const 0) (Var "n")))
-        (Seq
-          (Assign "x" (Binop Plus (Var "x") (Const 2)))
-          (Assign "n" (Binop Minus (Var "n") (Const 1)))))).
-
-  Coercion Const : nat >-> Exp.
-  Coercion Var : string >-> Exp.
-
-  Example ex0_code :=
-    (Seq
-      (Assign "n" 2)
-      (While tauto_hassertion (Unaop Lnot (Binop Eq 0 "n"))
-        (Seq
-          (Assign "x" (Binop Plus "x" 2))
-          (Assign "n" (Binop Minus "n" 1))))).
 
   Example bigstep_ex0: forall va va', eval va ex0_code va' ->
     va' $! "n" = 0 /\ va' $! "x" = va $! "x" + 4.
@@ -147,7 +131,7 @@ Module Big_step.
 
   Ltac bs_while :=
     simplify; match goal with
-    | [ H: eval _ (While _ _ _) _ |- _ ] => invert H
+    | [ H: eval _ (While _ _) _ |- _ ] => invert H
     end; simplify;
     match goal with
     | [ H : nat_to_bool _ = _ |- _ ] => try invert H
@@ -182,16 +166,16 @@ Module Small_step.
   | Step_If: forall va be bev th el,
     eval_exp va be = bev ->
     step (va, (If be th el)) (va, if nat_to_bool bev then th else el)
-  | Step_While0: forall va be inv body,
+  | Step_While0: forall va be body,
     nat_to_bool (eval_exp va be) = false ->
-    step (va, (While inv be body)) (va, Skip)
-  | Step_While1: forall va be inv body,
+    step (va, (While be body)) (va, Skip)
+  | Step_While1: forall va be body,
     nat_to_bool (eval_exp va be) = true ->
-    step (va, (While inv be body)) (va, Seq body (While inv be body))
-  | Step_Assert: forall va (a : hassertion),
-    a va ->
+    step (va, (While be body)) (va, Seq body (While be body))
+  | Step_Assert: forall va a,
+    a va = true ->
     step (va, (Assert a)) (va, Skip)
-  | Step_Assume: forall va (a : hassertion),
+  | Step_Assume: forall va a,
     step (va, (Assume a)) (va, Skip).
 
   Definition step_trsys_with_init (va : valuation) (code : Cmd) : trsys step_state := {|
@@ -357,7 +341,7 @@ Module Small_cps.
   Inductive Cont :=
   | Cont_Stop
   | Cont_Seq (c : Cmd) (k : Cont)
-  | Cont_While (inv : hassertion) (be : Exp) (body : Cmd) (k : Cont).
+  | Cont_While (be : Exp) (body : Cmd) (k : Cont).
 
 (* Note that cmd can be while.
    And Cont will have nested Whiles. (the level of iterations)
@@ -372,25 +356,25 @@ Module Small_cps.
   | CpsStep_If: forall va be bev th el k,
     eval_exp va be = bev ->
     cps_step (va, (If be th el), k) (va, if nat_to_bool bev then th else el, k)
-  | CpsStep_While0: forall va inv be body k,
+  | CpsStep_While0: forall va be body k,
     nat_to_bool (eval_exp va be) = false ->
-    cps_step (va, (While inv be body), k) (va, Skip, k)
-  | CpsStep_Assert: forall va (a : hassertion) k,
-    a va ->
+    cps_step (va, (While be body), k) (va, Skip, k)
+  | CpsStep_Assert: forall va a k,
+    a va = true ->
     cps_step (va, (Assert a), k) (va, Skip, k)
-  | CpsStep_Assume: forall va (a : hassertion) k,
+  | CpsStep_Assume: forall va a k,
     cps_step (va, (Assume a), k) (va, Skip, k)
   (* resumption *)
   | CpsStep_SkipSeq: forall va c k,
     cps_step (va, Skip, Cont_Seq c k) (va, c, k)
-  | CpsStep_SkipWhile: forall va inv be body k,
-    cps_step (va, Skip, Cont_While inv be body k) (va, While inv be body, k)
+  | CpsStep_SkipWhile: forall va be body k,
+    cps_step (va, Skip, Cont_While be body k) (va, While be body, k)
   (* focusing *)
   | CpsStep_Seq1: forall va c0 c1 k,
     cps_step (va, (Seq c0 c1), k) (va, c0, Cont_Seq c1 k)
-  | CpsStep_While1: forall va inv be body k,
+  | CpsStep_While1: forall va be body k,
     nat_to_bool (eval_exp va be) = true ->
-    cps_step (va, (While inv be body), k) (va, body, Cont_While inv be body k). (* this one has computation too *)
+    cps_step (va, (While be body), k) (va, body, Cont_While be body k). (* this one has computation too *)
 
 
   Definition cps_step_trsys_with_init (va : valuation) (code : Cmd) : trsys cps_state := {|
@@ -416,7 +400,7 @@ Module Small_cps.
     invert H0. invert H.
     invert H1. invert H.
     invert H0. invert H; simplify.
-      invert H7.
+      invert H6.
 
     invert H1. invert H.
     invert H0. invert H.
@@ -424,7 +408,7 @@ Module Small_cps.
     invert H0. invert H.
     invert H1. invert H.
     invert H0. invert H; simplify.
-      invert H8.
+      invert H7.
 
     invert H1. invert H.
     invert H0. invert H.
@@ -436,7 +420,7 @@ Module Small_cps.
     invert H1.
       simplify. lia.
       invert H.
-    invert H9.
+    invert H8.
   Restart.
     Ltac cps_step_invert_one :=
       repeat match goal with
@@ -538,7 +522,7 @@ Module Small_cps.
       + eapply TrcFront. econstructor. apply IHeval1.
       + econstructor. econstructor. eapply IHeval2.
     - econstructor. econstructor. econstructor. rewrite H. apply IHeval.
-    - idtac... equality.
+    - idtac...
     - eapply trc_trans.
       + eapply TrcFront. apply CpsStep_While1. equality. apply IHeval1.
       + econstructor. econstructor. apply IHeval2.
@@ -556,7 +540,7 @@ Module Small_cps.
     match k with
     | Cont_Stop => Skip
     | Cont_Seq c k => Seq c (cont_denote_cmd k)
-    | Cont_While inv be body k => Seq (While inv be body) (cont_denote_cmd k)
+    | Cont_While be body k => Seq (While be body) (cont_denote_cmd k)
     end.
 
 (* The above denotation function gives semantics to continuations.
@@ -573,7 +557,7 @@ Module Small_cps.
       match k with
       | Cont_Stop => c
       | Cont_Seq c1 k => cont_apply (Seq c c1) k
-      | Cont_While inv be body k => cont_apply (Seq c (While inv be body)) k
+      | Cont_While be body k => cont_apply (Seq c (While be body)) k
       end.
 
   (* `cont_apply c k` is equivalent to `(Seq c (cont_denote_cmd k))` for big-step execution. *)
@@ -659,7 +643,6 @@ Module Small_cps.
     apply H. apply IHtrc. auto. auto.
   Qed.
 
-
   Lemma cps_to_big_code: forall code va va',
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
     eval va code va'.
@@ -706,6 +689,206 @@ Module Small_cps.
   Qed.
 End Small_cps.
 
+Module IMPHoare.
+  Import IMPLang.
+
+  Definition hprop := valuation -> Prop.
+  Definition hprop_true : hprop := fun va => True.
+  Definition hprop_false : hprop := fun va => False.
+  (* Note the return types. *)
+  Definition himply (p q : hprop) : Prop := forall va, p va -> q va.
+  Definition andh (p q : hprop) : hprop := fun va => p va /\ q va.
+  Definition noth (p : hprop) : hprop := fun va => ~ p va.
+
+  Lemma himply_refl: forall p, himply p p.
+  Proof.
+    unfold himply; intuition.
+  Qed.
+  Hint Resolve himply_refl : core.
+  Lemma himply_trans: forall p q r, himply p q -> himply q r -> himply p r.
+  Proof.
+    unfold himply; intuition.
+  Qed.
+  Hint Resolve himply_trans : core.
+  Lemma himply_andh: forall p q, himply (andh p q) p.
+  Proof.
+    unfold himply; unfold andh; intuition.
+  Qed.
+  Hint Resolve himply_andh : core.
+  Lemma himply_andh_comm: forall p q, himply (andh p q) (andh q p).
+  Proof.
+    unfold himply; unfold andh; intuition.
+  Qed.
+  Hint Resolve himply_andh_comm : core.
+
+
+(* Many flavours of hoare triples exist.
+
+   For example, assignment is usually written in a backwards fashion a.k.a. the Hoare rule
+      {{ P[e/x] }}  x=e  {{ P }}    [ HT_Assignment ]
+   Or in a forward fashion a.k.a. the Floyd rule
+      fresh x'
+      -----------
+      {{ x=x' }}  x=e  {{ x = e[x'/x] }}
+
+  Actually floyd rule makes verification harder, because it introduces quantifiers to assertions.
+  SF uses the hoare rule, and FRAP uses floyd rule.
+*)
+
+  Module FloydAssign.
+    Inductive hoare_triple : hprop -> Cmd -> hprop -> Prop :=
+    (* computation *)
+    | HT_Skip: forall p,
+      hoare_triple p Skip p
+    | HT_Assign: forall p x e,
+      hoare_triple p (Assign x e) (fun va => exists va', p va' /\ va = va' $+ (x, eval_exp va' e))
+    | HT_If: forall p q be th el,
+      hoare_triple (andh p (fun va => nat_to_bool (eval_exp va be) = true))  th q ->
+      hoare_triple (andh p (fun va => nat_to_bool (eval_exp va be) = false)) el q ->
+      hoare_triple p (If be th el) q
+    | HT_Seq: forall p q r c0 c1,
+      hoare_triple p c0 r ->
+      hoare_triple r c1 q ->
+      hoare_triple p (Seq c0 c1) q
+    | HT_While: forall p q inv be body,
+      himply p inv ->
+      himply (andh inv (fun va => nat_to_bool (eval_exp va be) = false)) q ->
+      hoare_triple (andh inv (fun va => nat_to_bool (eval_exp va be) = true)) body inv ->
+      hoare_triple p (While be body) q
+    | HT_Assert: forall p a,
+      himply p (fun va => a va = true) ->
+      hoare_triple p (Assert a) p
+    | HT_Assume: forall p a,
+      hoare_triple p (Assume a) (andh p (fun va => a va = true))
+    (* meta transformation *)
+    | HT_Conseq: forall p q p' q' c,
+      himply p p' ->
+      himply q' q ->
+      hoare_triple p c q ->
+      hoare_triple p' c q'.
+
+    Lemma HT_Post: forall p c q q',
+      hoare_triple p c q ->
+      himply q' q ->
+      hoare_triple p c q'.
+    Proof.
+      eauto using hoare_triple.
+    Qed.
+
+    Lemma HT_Pre: forall p c q p',
+      hoare_triple p c q ->
+      himply p p' ->
+      hoare_triple p' c q.
+    Proof.
+      eauto using hoare_triple.
+    Qed.
+
+    Lemma bool_to_nat_to_bool: forall v,
+      nat_to_bool (bool_to_nat v) = v.
+    Proof.
+      destruct v; simplify; auto.
+    Qed.
+
+    Example hoare_ex0: forall x0,
+      hoare_triple (fun va => va $! "x" = x0) ex0_code (fun va => va $! "n" = 0 /\ va $! "x" = x0 + 4).
+    Proof.
+      unfold ex0_code; intros.
+      econstructor. econstructor.
+      apply HT_While with (fun va => va $! "n" >= 0 /\ (va $! "n") * 2 + (va $! "x") = x0 + 4).
+      - unfold himply. intros. cases H. intuition. (* problem: automate these *)
+        subst. simplify. lia.
+      - unfold himply. intros. cases H.
+        simplify; destruct (va $! "n"); simplify.
+        intuition. invert H0.
+      - econstructor. econstructor. eapply HT_Post. econstructor.
+        unfold himply. intros. (* what are all these quantifiers? *)
+    Abort.
+  End FloydAssign.
+
+  Module HoareAssign.
+    Definition hprop_bexp (e : Exp) : hprop := fun va => nat_to_bool (eval_exp va e) = true.
+
+    Inductive hoare_triple : hprop -> Cmd -> hprop -> Prop :=
+    (* computation *)
+    | HT_Skip: forall p,
+      hoare_triple p Skip p
+    | HT_Assign: forall q x e,
+      hoare_triple (fun va => q (va $+ (x, eval_exp va e))) (Assign x e) q
+    | HT_If: forall p q be th el,
+      hoare_triple (andh p (hprop_bexp be)) th q ->
+      hoare_triple (andh p (noth (hprop_bexp be))) el q ->
+      hoare_triple p (If be th el) q
+    | HT_Seq: forall p q r c0 c1,
+      hoare_triple p c0 r ->
+      hoare_triple r c1 q ->
+      hoare_triple p (Seq c0 c1) q
+    | HT_While: forall inv be body,
+      hoare_triple (andh inv (hprop_bexp be)) body inv ->
+      hoare_triple inv (While be body) (andh inv (noth (hprop_bexp be)))
+    | HT_Assert: forall p a,
+      himply p (fun va => a va = true) ->
+      hoare_triple p (Assert a) p
+    | HT_Assume: forall p a,
+      hoare_triple p (Assume a) (andh p ((fun va => a va = true)))
+    (* meta transformation *)
+    | HT_Conseq: forall p q p' q' c,
+      hoare_triple p c q ->
+      himply p p' ->
+      himply q' q ->
+      hoare_triple p' c q'.
+
+
+    Lemma HT_Post: forall p c q q',
+      hoare_triple p c q ->
+      himply q' q ->
+      hoare_triple p c q'.
+    Proof.
+      eauto using hoare_triple.
+    Qed.
+
+    Lemma HT_Pre: forall p c q p',
+      hoare_triple p c q ->
+      himply p p' ->
+      hoare_triple p' c q.
+    Proof.
+      eauto using hoare_triple.
+    Qed.
+
+    Lemma bool_to_nat_to_bool: forall v,
+      nat_to_bool (bool_to_nat v) = v.
+    Proof.
+      destruct v; simplify; auto.
+    Qed.
+
+    Example hoare_ex0: forall x0,
+      hoare_triple (fun va => va $! "x" = x0) ex0_code (fun va => va $! "n" = 0 /\ va $! "x" = x0 + 4).
+    Proof.
+      (* this shit is so manual... needs automation! *)
+      unfold ex0_code; intros.
+      apply HT_Seq with (fun va => va$!"n">=0 /\ (2*(va$!"n")+(va$!"x")=x0+4)).
+      + eapply HT_Pre. apply HT_Assign.
+        intro va. intuition. simplify. lia.
+      + apply HT_Post with (andh (fun va => (va $! "n" >= 0 /\ 2 * va $! "n" + va $! "x" = x0 + 4)) (noth (hprop_bexp (Unaop Lnot (Binop Eq 0 "n"))))).
+        - apply HT_While.
+          eapply HT_Seq.
+          * eapply HT_Pre. eapply HT_Assign.
+          (* and what is this shit? *)
+    Abort.
+  End HoareAssign.
+  Export HoareAssign.
+
+End IMPHoare.
+
+Module Stack_machine.
+  Import IMPLang.
+
+  Inductive stack_cmd :=
+  | SUnary (op : UnaopKind)
+  | SBinary (op : BinopKind)
+  | SConst (v : Value).
+  (* TODO *)
+
+End Stack_machine.
 
 Module Unused.
   (* example: how to do fmap normalization *)
@@ -754,8 +937,8 @@ Module Failed.
         rename x into va1. eexists. split.
         ec. apply CpsStep_While1. ea.
         (* cannot go from here.
-            We want to prove      (va0, body, Cont_While inv be body k0) ~>* (?va1, Skip, k0)
-            But we have by IH     (va0, body, Cont_While inv be body k0) ~>* ( va1, Skip, Cont_While inv be body k0)
+            We want to prove      (va0, body, Cont_While be body k0) ~>* (?va1, Skip, k0)
+            But we have by IH     (va0, body, Cont_While be body k0) ~>* ( va1, Skip, Cont_While be body k0)
             The latter is just one iteration but the former is many iterations.
 
             The problem is on the induction hypothesis...

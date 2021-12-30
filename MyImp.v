@@ -84,34 +84,34 @@ Module Big_step.
 
   (* relational big step *)
   Inductive eval : valuation -> Cmd -> valuation -> Prop :=
-  | EvalDefault_Skip: forall va,
+  | Eval_Skip: forall va,
     eval va Skip va
-  | EvalDefault_Assign: forall va x e ve,
+  | Eval_Assign: forall va x e ve,
     eval_exp va e = ve ->
     eval va (Assign x e) (va $+ (x, ve))
-  | EvalDefault_Seq: forall va0 va1 va2 c0 c1,
+  | Eval_Seq: forall va0 va1 va2 c0 c1,
     eval va0 c0 va1 ->
     eval va1 c1 va2 ->
     eval va0 (Seq c0 c1) va2
-  | EvalDefault_If: forall va0 va1 be bev th el,
+  | Eval_If: forall va0 va1 be bev th el,
     eval_exp va0 be = bev ->
     eval va0 (if (nat_to_bool bev) then th else el) va1 ->
     eval va0 (If be th el) va1
-  | EvalDefault_While0: forall va0 inv be bev body,
+  | Eval_While0: forall va0 inv be bev body,
     eval_exp va0 be = bev ->
     nat_to_bool bev = false ->
     eval va0 (While inv be body) va0
-  | EvalDefault_While1: forall va0 va1 va2 inv be bev body,
+  | Eval_While1: forall va0 va1 va2 inv be bev body,
     eval_exp va0 be = bev ->
     nat_to_bool bev = true ->
     eval va0 body va1 ->
     eval va1 (While inv be body) va2 ->
     eval va0 (While inv be body) va2
-  | EvalDefault_Assert: forall va0 (a : hassertion),
+  | Eval_Assert: forall va0 (a : hassertion),
     a va0 ->
     eval va0 (Assert a) va0
   (* Assume behave like no-ops *)
-  | EvalDefault_Assume: forall va0 a,
+  | Eval_Assume: forall va0 a,
     eval va0 (Assume a) va0.
   Check tauto_hassertion.
 
@@ -590,7 +590,7 @@ Module Small_cps.
     - bs_simple. apply IHk...
   Qed.
 
-  Theorem big_to_cps_cont: forall k c va va',
+  Lemma big_to_cps_cont: forall k c va va',
     eval va (cont_apply c k) va' ->
     cps_step^* (va, c, k) (va', Skip, Cont_Stop).
   Proof.
@@ -612,7 +612,7 @@ Module Small_cps.
       apply IHk. rewrite cont_apply_split. econstructor. econstructor. auto.
   Qed.
 
-  Lemma cps_to_big_codeonly_one: forall c0 c1 va0 va1 va2 k0 k1,
+  Lemma cps_to_big_one: forall c0 c1 va0 va1 va2 k0 k1,
     cps_step (va0, c0, k0) (va1, c1, k1) ->
     eval va1 (cont_apply c1 k1) va2 ->
     eval va0 (cont_apply c0 k0) va2.
@@ -627,10 +627,10 @@ Module Small_cps.
     - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple.
-      econstructor. eapply EvalDefault_While1... auto.
+      econstructor. eapply Eval_While1... auto.
   Qed.
 
-  Theorem cps_to_big_codeonly_fail: forall code va va',
+  Lemma cps_to_big_code_fail: forall code va va',
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
     eval va code va'.
   Proof.
@@ -647,7 +647,7 @@ Module Small_cps.
      *)
   Abort.
 
-  Theorem cps_to_big_cont: forall code va va' k,
+  Lemma cps_to_big_cont: forall code va va' k,
     cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
     eval va (cont_apply code k) va'.
   Proof.
@@ -655,12 +655,12 @@ Module Small_cps.
     econstructor.
 
     cases y; cases p.
-    eapply cps_to_big_codeonly_one.
+    eapply cps_to_big_one.
     apply H. apply IHtrc. auto. auto.
   Qed.
 
 
-  Theorem cps_to_big_codeonly: forall code va va',
+  Lemma cps_to_big_code: forall code va va',
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
     eval va code va'.
   Proof.
@@ -668,6 +668,41 @@ Module Small_cps.
     replace code with (cont_apply code Cont_Stop) by (simplify; auto).
     apply cps_to_big_cont.
     auto.
+  Qed.
+
+  Theorem equiv_big_cps: forall code va va' k,
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop) <->
+    eval va (cont_apply code k) va'.
+  Proof.
+    split. apply cps_to_big_cont. apply big_to_cps_cont.
+  Qed.
+
+  Theorem equiv_big_cps_code: forall code va va',
+    cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) <->
+    eval va code va'.
+  Proof.
+    intros. apply equiv_big_cps.
+  Qed.
+
+  Lemma cps_to_small_cont:  forall code va va' k,
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
+    step^* (va, cont_apply code k) (va', Skip).
+  Proof.
+    intros. apply big_to_small. apply cps_to_big_cont. auto.
+  Qed.
+
+  Lemma small_to_cps_cont:  forall code va va' k,
+    step^* (va, cont_apply code k) (va', Skip) ->
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop).
+  Proof.
+    intros. apply big_to_cps_cont. apply small_to_big. auto.
+  Qed.
+
+  Theorem equiv_small_cps: forall code va va' k,
+    step^* (va, cont_apply code k) (va', Skip) <->
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop).
+  Proof.
+    split. apply small_to_cps_cont. apply cps_to_small_cont.
   Qed.
 End Small_cps.
 

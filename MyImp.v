@@ -527,7 +527,7 @@ Module Small_cps.
          *)
   Abort.
 
-  Lemma big_to_cps_codeonly: forall code va va',
+  Theorem big_to_cps_codeonly: forall code va va',
     eval va code va' -> forall k,
     cps_step^* (va, code, k) (va', Skip, k).
   Proof with (repeat (try eassumption; econstructor)).
@@ -590,7 +590,7 @@ Module Small_cps.
     - bs_simple. apply IHk...
   Qed.
 
-  Lemma big_to_cps_cont: forall k c va va',
+  Theorem big_to_cps_cont: forall k c va va',
     eval va (cont_apply c k) va' ->
     cps_step^* (va, c, k) (va', Skip, Cont_Stop).
   Proof.
@@ -612,19 +612,71 @@ Module Small_cps.
       apply IHk. rewrite cont_apply_split. econstructor. econstructor. auto.
   Qed.
 
-  Theorem cps_to_big: forall code va va',
+  Lemma cps_to_big_codeonly_one: forall c0 c1 va0 va1 va2 k0 k1,
+    cps_step (va0, c0, k0) (va1, c1, k1) ->
+    eval va1 (cont_apply c1 k1) va2 ->
+    eval va0 (cont_apply c0 k0) va2.
+  Proof with (repeat (try eassumption; econstructor)).
+    induct 1; simplify.
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple...
+    - rewrite cont_apply_split in *. bs_simple.
+      econstructor. eapply EvalDefault_While1... auto.
+  Qed.
+
+  Theorem cps_to_big_codeonly_fail: forall code va va',
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
     eval va code va'.
   Proof.
+    induct 1; simplify.
+    econstructor.
+
+    cases y; cases p.
+    (* Cannot go from here.
+        IHtrc requires `c = Cont_Stop` but H requires `(va, code, Cont_Stop) ~> (v, c0, c)`
+        The two conflicts.
+
+        The problem is that the IHtrc is too strong.
+        Thus we relax the restrictions by allowing to start from a continuation other than `Cont_Stop`.
+     *)
   Abort.
+
+  Theorem cps_to_big_cont: forall code va va' k,
+    cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
+    eval va (cont_apply code k) va'.
+  Proof.
+    induct 1; simplify.
+    econstructor.
+
+    cases y; cases p.
+    eapply cps_to_big_codeonly_one.
+    apply H. apply IHtrc. auto. auto.
+  Qed.
+
+
+  Theorem cps_to_big_codeonly: forall code va va',
+    cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
+    eval va code va'.
+  Proof.
+    intros.
+    replace code with (cont_apply code Cont_Stop) by (simplify; auto).
+    apply cps_to_big_cont.
+    auto.
+  Qed.
 End Small_cps.
 
+
 Module Unused.
-
   (* example: how to do fmap normalization *)
-  Goal forall va, ((va $+ ("n", 2) $+ ("x", va $! "x" + 2) $+ ("n", 1)) = (va $+ ("n", 1) $+ ("x", va $! "x" + 2))).
+  Goal forall va,
+    ((va $+ ("n", 2) $+ ("x", va $! "x" + 2) $+ ("n", 1)) = (va $+ ("n", 1) $+ ("x", va $! "x" + 2))).
   intros. maps_equal. Qed.
-
 End Unused.
 
 Module Failed.

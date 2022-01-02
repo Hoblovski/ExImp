@@ -1,6 +1,9 @@
 Require Import List Lia ZArith.
 Require Import Frap TransitionSystems.
 
+
+Arguments Z.mul: simpl never.
+Arguments Z.add: simpl never.
 Open Scope Z.
 (* All variables are by default initialized to 0 *)
 Notation "m $! k" := (match m $? k with Some n => n | None => 0 end)%Z (at level 30).
@@ -42,6 +45,12 @@ Module IMPLang.
 
   Definition value_to_bool (n : Value) := negb (n =? 0).
   Definition bool_to_value (b : bool) := if b then 1 else 0.
+
+  Lemma bool_to_value_to_bool: forall v,
+    value_to_bool (bool_to_value v) = v.
+  Proof.
+    destruct v; simplify; auto.
+  Qed.
 
   Definition interp_unaopkind (k : UnaopKind) : Value -> Value :=
     match k with
@@ -722,6 +731,26 @@ Module IMPHoare.
   Qed.
   Hint Resolve himply_andh_comm : core.
 
+  Lemma andh_sem: forall p q va, p va /\ q va <-> andh p q va.
+  Proof.
+    unfold andh; intuition.
+  Qed.
+  Lemma himply_sem: forall p q va, himply p q -> p va -> q va.
+  Proof.
+    unfold himply; intuition.
+  Qed.
+
+  (* used to convert a IMP proposition (boolean expr) to a logical proposition (hoare assertion) *)
+  Definition hprop_bexp (e : Exp) : hprop := fun va => value_to_bool (eval_exp va e) = true.
+
+  Lemma hprop_eval_true: forall va be, value_to_bool (eval_exp va be) = true <-> hprop_bexp be va.
+  Proof.
+    unfold hprop_bexp. intuition.
+  Qed.
+  Lemma hprop_eval_false: forall va be, value_to_bool (eval_exp va be) = false <-> noth (hprop_bexp be) va.
+  Proof.
+    unfold hprop_bexp. unfold noth. intros. rewrite not_true_iff_false. intuition.
+  Qed.
 
 (* Many flavours of hoare triples exist.
 
@@ -763,14 +792,14 @@ Module IMPHoare.
       hoare_triple p (Assume a) (andh p (fun va => a va = true))
     (* meta transformation *)
     | HT_Conseq: forall p q p' q' c,
-      himply p p' ->
-      himply q' q ->
+      himply p' p ->
+      himply q q' ->
       hoare_triple p c q ->
       hoare_triple p' c q'.
 
     Lemma HT_Post: forall p c q q',
       hoare_triple p c q ->
-      himply q' q ->
+      himply q q' ->
       hoare_triple p c q'.
     Proof.
       eauto using hoare_triple.
@@ -778,19 +807,11 @@ Module IMPHoare.
 
     Lemma HT_Pre: forall p c q p',
       hoare_triple p c q ->
-      himply p p' ->
+      himply p' p ->
       hoare_triple p' c q.
     Proof.
       eauto using hoare_triple.
     Qed.
-
-    Lemma bool_to_value_to_bool: forall v,
-      value_to_bool (bool_to_value v) = v.
-    Proof.
-      destruct v; simplify; auto.
-    Qed.
-Arguments Z.mul: simpl never.
-Arguments Z.add: simpl never.
 
     (* a few pitfalls:
         use Z than nat for value. subtraction of nat is hell.
@@ -802,8 +823,6 @@ Arguments Z.add: simpl never.
   End FloydAssign.
 
   Module HoareAssign.
-    Definition hprop_bexp (e : Exp) : hprop := fun va => value_to_bool (eval_exp va e) = true.
-
     Inductive hoare_triple : hprop -> Cmd -> hprop -> Prop :=
     (* computation *)
     | HT_Skip: forall p,
@@ -829,14 +848,14 @@ Arguments Z.add: simpl never.
     (* meta transformation *)
     | HT_Conseq: forall p q p' q' c,
       hoare_triple p c q ->
-      himply p p' ->
-      himply q' q ->
+      himply p' p ->
+      himply q q' ->
       hoare_triple p' c q'.
 
 
     Lemma HT_Post: forall p c q q',
       hoare_triple p c q ->
-      himply q' q ->
+      himply q q' ->
       hoare_triple p c q'.
     Proof.
       eauto using hoare_triple.
@@ -844,43 +863,89 @@ Arguments Z.add: simpl never.
 
     Lemma HT_Pre: forall p c q p',
       hoare_triple p c q ->
-      himply p p' ->
+      himply p' p ->
       hoare_triple p' c q.
     Proof.
       eauto using hoare_triple.
     Qed.
 
-    Lemma bool_to_value_to_bool: forall v,
-      value_to_bool (bool_to_value v) = v.
-    Proof.
-      destruct v; simplify; auto.
-    Qed.
-
     Example hoare_ex0: forall x0,
       hoare_triple (fun va => va $! "x" = x0) ex0_code (fun va => va $! "n" = 0 /\ va $! "x" = x0 + 4).
     Proof.
-      (* this shit is so manual... needs automation! *)
-      unfold ex0_code; intros.
-      apply HT_Seq with (fun va => va$!"n">=0 /\ (2*(va$!"n")+(va$!"x")=x0+4)).
-      + eapply HT_Pre. apply HT_Assign.
-        intro va. intuition. simplify. lia.
-      + apply HT_Post with (andh (fun va => (va $! "n" >= 0 /\ 2 * va $! "n" + va $! "x" = x0 + 4)) (noth (hprop_bexp (Unaop Lnot (Binop Eq 0 "n"))))).
-        - apply HT_While.
-          apply HT_Seq with (fun va => va$!"n" >= 1 /\ 2*(va$!"n") + (va$!"x") = x0 + 6).
-          * eapply HT_Pre. eapply HT_Assign.
-            intro va. unfold andh. unfold hprop_bexp. simplify. intuition. repeat rewrite bool_to_value_to_bool.
-            apply negb_true_iff. remember (va$!"n") as vn. destruct (Z.eqb_spec vn 0).
-            (* TODO: wtf here? *)
-            lia. Search Z.eqb. simplify. cases vn. lia. auto. auto.
-          * eapply HT_Pre. eapply HT_Assign.
-            intro va. simplify. lia.
-        - intro va. unfold andh. unfold noth. unfold hprop_bexp. intuition.
-          simplify.  repeat rewrite bool_to_value_to_bool in H. remember (va $! "n") as vn; clear Heqvn.
-          apply negb_true_iff in H. rewrite H0 in H. discriminate.
+    Abort.
+
+    (* This could be made computable, but that's not the focus for proofs. *)
+    Fixpoint assume_free (c : Cmd) : Prop :=
+    match c with
+    | Skip => True
+    | Assign x e => True
+    | Seq c1 c2 => assume_free c1 /\ assume_free c2
+    | If be th el => assume_free th /\ assume_free el
+    | While be body => assume_free body
+    | Assert a => True
+    | Assume a => False
+    end.
+
+    Import Big_step.
+    Lemma hoare_sound_fail: forall p c q,
+      hoare_triple p c q ->
+      forall va va',
+        p va ->
+        eval va c va' ->
+        q va'.
+    Proof.
+      induct 1%nat; simplify;
+        try (bs_simple; assumption).
+      - invert H2. cases (value_to_bool (eval_exp va be)).
+        + eapply IHhoare_triple1; eauto. rewrite <- andh_sem. eauto.
+        + eapply IHhoare_triple2; eauto. rewrite <- andh_sem. rewrite <- hprop_eval_false. eauto.
+      - invert H2.
+        eauto 6.
+      - induct H1; simplify. (* induction on the number of iterations *)
+        + rewrite <- andh_sem. split; eauto. rewrite <- hprop_eval_false; eauto.
+        + apply (IHeval2 be body); eauto.
+          eapply IHhoare_triple; eauto.
+          rewrite <- andh_sem. split; eauto.
+      - invert H1. eauto.
+      - invert H0. rewrite <- andh_sem. admit. (* assumes make hoare unsound! *)
+      - eapply himply_sem; eauto.
+        (* during proof for this subgoal I realized I wrote the himply in HT_Conseq in the wrong order... *)
+    Abort.
+
+    Theorem hoare_sound: forall p c q,
+      assume_free c ->
+      hoare_triple p c q ->
+      forall va va',
+        p va ->
+        eval va c va' ->
+        q va'.
+    Proof.
+      induct 1%nat; simplify;
+        try (bs_simple; assumption).
+      - invert H1. cases (value_to_bool (eval_exp va be)).
+        + eapply IHhoare_triple1; eauto. intuition. rewrite <- andh_sem. eauto.
+        + eapply IHhoare_triple2; eauto. intuition. rewrite <- andh_sem. rewrite <- hprop_eval_false. eauto.
+      - invert H1.
+        eapply IHhoare_triple2; eauto. intuition.
+        eapply IHhoare_triple1; eauto. intuition.
+      - induct H2; simplify. (* induction on the number of iterations *)
+        + rewrite <- andh_sem. split; eauto. rewrite <- hprop_eval_false; eauto.
+        + specialize (IHhoare_triple H).
+          assert (inv va1). { eapply IHhoare_triple; eauto. rewrite <- andh_sem; eauto. }
+          specialize (IHeval2 H3).
+          apply (IHeval2 body H be); eauto.
+      - invert H2. eauto.
+      - intuition.
+      - eapply himply_sem; eauto.
     Qed.
+
+    (* Of course we cannot have a completeness theorem for hoare logic... *)
   End HoareAssign.
   Export HoareAssign.
 
+  Module WeakestPrecondition.
+  (* TODO *)
+  End WeakestPrecondition.
 End IMPHoare.
 
 Module Stack_machine.

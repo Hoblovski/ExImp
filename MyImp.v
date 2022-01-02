@@ -1,11 +1,12 @@
+Require Import List Lia ZArith.
 Require Import Frap TransitionSystems.
-Require Import List Lia.
 
+Open Scope Z.
 (* All variables are by default initialized to 0 *)
-Notation "m $! k" := (match m $? k with Some n => n | None => O end) (at level 30).
+Notation "m $! k" := (match m $? k with Some n => n | None => 0 end)%Z (at level 30).
 
 Module IMPLang.
-  Notation Value := nat.
+  Notation Value := Z.
 
   Inductive BinopKind :=
   | Plus
@@ -39,12 +40,12 @@ Module IMPLang.
 
   Definition to_bool {A B} (s : sumbool A B) := if s then true else false.
 
-  Definition nat_to_bool (n : nat) := negb (n =? 0)%nat.
-  Definition bool_to_nat (b : bool) := if b then 1 else 0.
+  Definition value_to_bool (n : Value) := negb (n =? 0).
+  Definition bool_to_value (b : bool) := if b then 1 else 0.
 
   Definition interp_unaopkind (k : UnaopKind) : Value -> Value :=
     match k with
-     | Lnot => fun x => bool_to_nat (negb (nat_to_bool x))
+     | Lnot => fun x => bool_to_value (negb (value_to_bool x))
     end.
 
   Definition interp_binopkind (k : BinopKind) : Value -> Value -> Value :=
@@ -52,11 +53,11 @@ Module IMPLang.
      | Plus => fun x y => x + y
      | Minus => fun x y => x - y
      | Mul => fun x y => x * y
-     | Eq => fun x y => bool_to_nat (x =? y)
-     | Le => fun x y => bool_to_nat (x <=? y)
-     | Land => fun x y => bool_to_nat (nat_to_bool x && nat_to_bool y)
-     | Lor => fun x y => bool_to_nat (nat_to_bool x || nat_to_bool y)
-    end%nat.
+     | Eq => fun x y => bool_to_value (x =? y)
+     | Le => fun x y => bool_to_value (x <=? y)
+     | Land => fun x y => bool_to_value (value_to_bool x && value_to_bool y)
+     | Lor => fun x y => bool_to_value (value_to_bool x || value_to_bool y)
+    end.
 
   Fixpoint eval_exp (va : valuation) (e : Exp) : Value :=
     match e with
@@ -73,7 +74,7 @@ Module IMPLang.
       opv e1v e2v
     end.
 
-  Coercion Const : nat >-> Exp.
+  Coercion Const : Z >-> Exp.
   Coercion Var : string >-> Exp.
   Example ex0_code :=
     (Seq
@@ -100,13 +101,13 @@ Module Big_step.
     eval va0 (Seq c0 c1) va2
   | Eval_If: forall va0 va1 be bev th el,
     eval_exp va0 be = bev ->
-    eval va0 (if (nat_to_bool bev) then th else el) va1 ->
+    eval va0 (if (value_to_bool bev) then th else el) va1 ->
     eval va0 (If be th el) va1
   | Eval_While0: forall va0 be body,
-    nat_to_bool (eval_exp va0 be) = false ->
+    value_to_bool (eval_exp va0 be) = false ->
     eval va0 (While be body) va0
   | Eval_While1: forall va0 va1 va2 be body,
-    nat_to_bool (eval_exp va0 be) = true ->
+    value_to_bool (eval_exp va0 be) = true ->
     eval va0 body va1 ->
     eval va1 (While be body) va2 ->
     eval va0 (While be body) va2
@@ -134,7 +135,7 @@ Module Big_step.
     | [ H: eval _ (While _ _) _ |- _ ] => invert H
     end; simplify;
     match goal with
-    | [ H : nat_to_bool _ = _ |- _ ] => try invert H
+    | [ H : value_to_bool _ = _ |- _ ] => try invert H
     end.
 
     unfold ex0_code; simplify.
@@ -165,12 +166,12 @@ Module Small_step.
     step (va, (Seq c0 c1)) (va', (Seq c0' c1))
   | Step_If: forall va be bev th el,
     eval_exp va be = bev ->
-    step (va, (If be th el)) (va, if nat_to_bool bev then th else el)
+    step (va, (If be th el)) (va, if value_to_bool bev then th else el)
   | Step_While0: forall va be body,
-    nat_to_bool (eval_exp va be) = false ->
+    value_to_bool (eval_exp va be) = false ->
     step (va, (While be body)) (va, Skip)
   | Step_While1: forall va be body,
-    nat_to_bool (eval_exp va be) = true ->
+    value_to_bool (eval_exp va be) = true ->
     step (va, (While be body)) (va, Seq body (While be body))
   | Step_Assert: forall va a,
     a va = true ->
@@ -210,7 +211,7 @@ Module Small_step.
   Ltac step_while :=
     step_one;
     match goal with
-    | [ H : nat_to_bool _ = _ |- _ ] => try invert H
+    | [ H : value_to_bool _ = _ |- _ ] => try invert H
     end.
 
     unfold ex0_code; simplify.
@@ -243,7 +244,7 @@ Module Small_step.
     step^* (va, Seq c1 c2) (va', Seq c1' c2).
   Proof.
   (* The key to coq thinking is inducting on proofs *)
-    induct 1.
+    induct 1%nat%nat.
     + constructor.
     + cases y.
       econstructor.
@@ -254,7 +255,7 @@ Module Small_step.
   Theorem big_to_small: forall code va va',
     eval va code va' -> step ^* (va, code) (va', Skip).
   Proof with (try econstructor; eauto).
-    induct 1; simplify.
+    induct 1%nat%nat; simplify.
     + econstructor.
     + econstructor...
     + eapply trc_trans. apply multistep_seqctx. eauto.
@@ -275,7 +276,7 @@ Module Small_step.
     forall va'', eval va' code' va'' ->
       eval va code va''.
   Proof with (try econstructor; eauto).
-    induct 1; simplify.
+    induct 1%nat%nat; simplify.
     + invert H...
     + econstructor...
     + invert H0. apply IHstep in H4...
@@ -289,7 +290,7 @@ Module Small_step.
   Theorem small_to_big: forall code va va',
     step^* (va, code) (va', Skip) -> eval va code va'.
   Proof.
-    induct 1; simplify.
+    induct 1%nat%nat; simplify.
     econstructor.
 
     cases y.
@@ -355,9 +356,9 @@ Module Small_cps.
     cps_step (va, (Assign x e), k) (va $+ (x, ve), Skip, k)
   | CpsStep_If: forall va be bev th el k,
     eval_exp va be = bev ->
-    cps_step (va, (If be th el), k) (va, if nat_to_bool bev then th else el, k)
+    cps_step (va, (If be th el), k) (va, if value_to_bool bev then th else el, k)
   | CpsStep_While0: forall va be body k,
-    nat_to_bool (eval_exp va be) = false ->
+    value_to_bool (eval_exp va be) = false ->
     cps_step (va, (While be body), k) (va, Skip, k)
   | CpsStep_Assert: forall va a k,
     a va = true ->
@@ -373,7 +374,7 @@ Module Small_cps.
   | CpsStep_Seq1: forall va c0 c1 k,
     cps_step (va, (Seq c0 c1), k) (va, c0, Cont_Seq c1 k)
   | CpsStep_While1: forall va be body k,
-    nat_to_bool (eval_exp va be) = true ->
+    value_to_bool (eval_exp va be) = true ->
     cps_step (va, (While be body), k) (va, body, Cont_While be body k). (* this one has computation too *)
 
 
@@ -437,7 +438,7 @@ Module Small_cps.
     Ltac cps_step_while :=
       cps_step_one;
       match goal with
-      | [ H : nat_to_bool _ = _ |- _ ] => try invert H
+      | [ H : value_to_bool _ = _ |- _ ] => try invert H
       end.
     (* These Ltacs are basically the same as smallstep's *)
 
@@ -484,7 +485,7 @@ Module Small_cps.
     eval va code va' ->
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop).
   Proof with (repeat (try eassumption; econstructor)).
-    induct 1; simplify.
+    induct 1%nat%nat; simplify.
     - idtac...
     - idtac...
     - eapply trc_trans.
@@ -515,7 +516,7 @@ Module Small_cps.
     eval va code va' -> forall k,
     cps_step^* (va, code, k) (va', Skip, k).
   Proof with (repeat (try eassumption; econstructor)).
-    induct 1; simplify.
+    induct 1%nat; simplify.
     - idtac...
     - idtac...
     - eapply trc_trans.
@@ -601,7 +602,7 @@ Module Small_cps.
     eval va1 (cont_apply c1 k1) va2 ->
     eval va0 (cont_apply c0 k0) va2.
   Proof with (repeat (try eassumption; econstructor)).
-    induct 1; simplify.
+    induct 1%nat; simplify.
     - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple...
@@ -618,7 +619,7 @@ Module Small_cps.
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop) ->
     eval va code va'.
   Proof.
-    induct 1; simplify.
+    induct 1%nat; simplify.
     econstructor.
 
     cases y; cases p.
@@ -635,7 +636,7 @@ Module Small_cps.
     cps_step^* (va, code, k) (va', Skip, Cont_Stop) ->
     eval va (cont_apply code k) va'.
   Proof.
-    induct 1; simplify.
+    induct 1%nat; simplify.
     econstructor.
 
     cases y; cases p.
@@ -743,8 +744,8 @@ Module IMPHoare.
     | HT_Assign: forall p x e,
       hoare_triple p (Assign x e) (fun va => exists va', p va' /\ va = va' $+ (x, eval_exp va' e))
     | HT_If: forall p q be th el,
-      hoare_triple (andh p (fun va => nat_to_bool (eval_exp va be) = true))  th q ->
-      hoare_triple (andh p (fun va => nat_to_bool (eval_exp va be) = false)) el q ->
+      hoare_triple (andh p (fun va => value_to_bool (eval_exp va be) = true))  th q ->
+      hoare_triple (andh p (fun va => value_to_bool (eval_exp va be) = false)) el q ->
       hoare_triple p (If be th el) q
     | HT_Seq: forall p q r c0 c1,
       hoare_triple p c0 r ->
@@ -752,8 +753,8 @@ Module IMPHoare.
       hoare_triple p (Seq c0 c1) q
     | HT_While: forall p q inv be body,
       himply p inv ->
-      himply (andh inv (fun va => nat_to_bool (eval_exp va be) = false)) q ->
-      hoare_triple (andh inv (fun va => nat_to_bool (eval_exp va be) = true)) body inv ->
+      himply (andh inv (fun va => value_to_bool (eval_exp va be) = false)) q ->
+      hoare_triple (andh inv (fun va => value_to_bool (eval_exp va be) = true)) body inv ->
       hoare_triple p (While be body) q
     | HT_Assert: forall p a,
       himply p (fun va => a va = true) ->
@@ -783,30 +784,25 @@ Module IMPHoare.
       eauto using hoare_triple.
     Qed.
 
-    Lemma bool_to_nat_to_bool: forall v,
-      nat_to_bool (bool_to_nat v) = v.
+    Lemma bool_to_value_to_bool: forall v,
+      value_to_bool (bool_to_value v) = v.
     Proof.
       destruct v; simplify; auto.
     Qed.
+Arguments Z.mul: simpl never.
+Arguments Z.add: simpl never.
 
+    (* a few pitfalls:
+        use Z than nat for value. subtraction of nat is hell.
+        precondition requires *)
     Example hoare_ex0: forall x0,
       hoare_triple (fun va => va $! "x" = x0) ex0_code (fun va => va $! "n" = 0 /\ va $! "x" = x0 + 4).
     Proof.
-      unfold ex0_code; intros.
-      econstructor. econstructor.
-      apply HT_While with (fun va => va $! "n" >= 0 /\ (va $! "n") * 2 + (va $! "x") = x0 + 4).
-      - unfold himply. intros. cases H. intuition. (* problem: automate these *)
-        subst. simplify. lia.
-      - unfold himply. intros. cases H.
-        simplify; destruct (va $! "n"); simplify.
-        intuition. invert H0.
-      - econstructor. econstructor. eapply HT_Post. econstructor.
-        unfold himply. intros. (* what are all these quantifiers? *)
     Abort.
   End FloydAssign.
 
   Module HoareAssign.
-    Definition hprop_bexp (e : Exp) : hprop := fun va => nat_to_bool (eval_exp va e) = true.
+    Definition hprop_bexp (e : Exp) : hprop := fun va => value_to_bool (eval_exp va e) = true.
 
     Inductive hoare_triple : hprop -> Cmd -> hprop -> Prop :=
     (* computation *)
@@ -854,8 +850,8 @@ Module IMPHoare.
       eauto using hoare_triple.
     Qed.
 
-    Lemma bool_to_nat_to_bool: forall v,
-      nat_to_bool (bool_to_nat v) = v.
+    Lemma bool_to_value_to_bool: forall v,
+      value_to_bool (bool_to_value v) = v.
     Proof.
       destruct v; simplify; auto.
     Qed.
@@ -870,10 +866,18 @@ Module IMPHoare.
         intro va. intuition. simplify. lia.
       + apply HT_Post with (andh (fun va => (va $! "n" >= 0 /\ 2 * va $! "n" + va $! "x" = x0 + 4)) (noth (hprop_bexp (Unaop Lnot (Binop Eq 0 "n"))))).
         - apply HT_While.
-          eapply HT_Seq.
+          apply HT_Seq with (fun va => va$!"n" >= 1 /\ 2*(va$!"n") + (va$!"x") = x0 + 6).
           * eapply HT_Pre. eapply HT_Assign.
-          (* and what is this shit? *)
-    Abort.
+            intro va. unfold andh. unfold hprop_bexp. simplify. intuition. repeat rewrite bool_to_value_to_bool.
+            apply negb_true_iff. remember (va$!"n") as vn. destruct (Z.eqb_spec vn 0).
+            (* TODO: wtf here? *)
+            lia. Search Z.eqb. simplify. cases vn. lia. auto. auto.
+          * eapply HT_Pre. eapply HT_Assign.
+            intro va. simplify. lia.
+        - intro va. unfold andh. unfold noth. unfold hprop_bexp. intuition.
+          simplify.  repeat rewrite bool_to_value_to_bool in H. remember (va $! "n") as vn; clear Heqvn.
+          apply negb_true_iff in H. rewrite H0 in H. discriminate.
+    Qed.
   End HoareAssign.
   Export HoareAssign.
 
@@ -895,6 +899,18 @@ Module Unused.
   Goal forall va,
     ((va $+ ("n", 2) $+ ("x", va $! "x" + 2) $+ ("n", 1)) = (va $+ ("n", 1) $+ ("x", va $! "x" + 2))).
   intros. maps_equal. Qed.
+
+  Goal (forall x, x <> 5 -> (match x with | 5 => true | _ => false end) = false)%nat.
+  (* any cleverer methods? *)
+  repeat (destruct x; auto). intuition.
+  Qed.
+
+  Goal (forall x, x <> 5 -> (match x with | 5 => true | _ => false end) = false)%Z.
+  (* any cleverer methods? *)
+  destruct x; auto. (* how to cope with this ??? *)
+  repeat (destruct p; auto).
+  lia.
+  Qed.
 End Unused.
 
 Module Failed.
@@ -922,7 +938,7 @@ Module Failed.
       eexists. split.
       ec. ec. eapply trc_trans. ea. ec. ec. ea. ea.
     - rename c0_1 into th; rename c0_2 into el.
-      invert H. invert H0. cases (nat_to_bool (eval_exp va0 be)).
+      invert H. invert H0. cases (value_to_bool (eval_exp va0 be)).
       + apply IHc0_1 in H1. cases H1. cases H.
         eexists. ec. ec. ec. ec. rewrite Heq. ea. ea.
       + apply IHc0_2 in H1. cases H1. cases H.

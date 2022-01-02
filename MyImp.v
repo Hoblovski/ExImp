@@ -253,7 +253,7 @@ Module Small_step.
     step^* (va, Seq c1 c2) (va', Seq c1' c2).
   Proof.
   (* The key to coq thinking is inducting on proofs *)
-    induct 1%nat%nat.
+    induct 1%nat.
     + constructor.
     + cases y.
       econstructor.
@@ -264,7 +264,7 @@ Module Small_step.
   Theorem big_to_small: forall code va va',
     eval va code va' -> step ^* (va, code) (va', Skip).
   Proof with (try econstructor; eauto).
-    induct 1%nat%nat; simplify.
+    induct 1%nat; simplify.
     + econstructor.
     + econstructor...
     + eapply trc_trans. apply multistep_seqctx. eauto.
@@ -285,7 +285,7 @@ Module Small_step.
     forall va'', eval va' code' va'' ->
       eval va code va''.
   Proof with (try econstructor; eauto).
-    induct 1%nat%nat; simplify.
+    induct 1%nat; simplify.
     + invert H...
     + econstructor...
     + invert H0. apply IHstep in H4...
@@ -299,7 +299,7 @@ Module Small_step.
   Theorem small_to_big: forall code va va',
     step^* (va, code) (va', Skip) -> eval va code va'.
   Proof.
-    induct 1%nat%nat; simplify.
+    induct 1%nat; simplify.
     econstructor.
 
     cases y.
@@ -494,7 +494,7 @@ Module Small_cps.
     eval va code va' ->
     cps_step^* (va, code, Cont_Stop) (va', Skip, Cont_Stop).
   Proof with (repeat (try eassumption; econstructor)).
-    induct 1%nat%nat; simplify.
+    induct 1%nat; simplify.
     - idtac...
     - idtac...
     - eapply trc_trans.

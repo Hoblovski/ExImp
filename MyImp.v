@@ -872,7 +872,28 @@ Module IMPHoare.
     Example hoare_ex0: forall x0,
       hoare_triple (fun va => va $! "x" = x0) ex0_code (fun va => va $! "n" = 0 /\ va $! "x" = x0 + 4).
     Proof.
-    Abort.
+      (* this shit is so manual... especially handling Seq. needs automation!
+       * Automation will be introduced in the WP calculus module.
+       *)
+      unfold ex0_code; intros.
+      remember (fun va => va$!"n">=0 /\ (2*(va$!"n")+(va$!"x")=x0+4)) as inv.
+      remember (Unaop Lnot (Binop Eq 0 "n")) as be.
+      apply HT_Seq with inv.
+      + eapply HT_Pre. apply HT_Assign. (* This is how stupid assignments are handled... First Pre then Assign *)
+        intro va. rewrite Heqinv. simplify. lia.
+      + apply HT_Post with (andh inv (noth (hprop_bexp be))).
+        - apply HT_While.
+          apply HT_Seq with (fun va => va$!"n" >= 1 /\ 2*(va$!"n") + (va$!"x") = x0 + 6).
+          * eapply HT_Pre. eapply HT_Assign.
+            intro va. unfold andh. unfold hprop_bexp. subst. simplify. repeat rewrite bool_to_value_to_bool in *. intuition.
+            cases (va$!"n"); simplify; try discriminate; lia.
+          * eapply HT_Pre. eapply HT_Assign.
+            intro va. subst. simplify. lia.
+        - intro va. unfold andh. unfold noth. unfold hprop_bexp. subst. simplify.
+          repeat rewrite bool_to_value_to_bool in *.
+          cases (va$!"n"); simplify; try discriminate; try lia.
+          intuition.
+    Qed.
 
     (* This could be made computable, but that's not the focus for proofs. *)
     Fixpoint assume_free (c : Cmd) : Prop :=
@@ -887,7 +908,7 @@ Module IMPHoare.
     end.
 
     Import Big_step.
-    Lemma hoare_sound_fail: forall p c q,
+    Theorem hoare_sound_fail: forall p c q,
       hoare_triple p c q ->
       forall va va',
         p va ->

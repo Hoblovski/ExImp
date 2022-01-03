@@ -9,6 +9,7 @@ Open Scope Z.
 Notation "m $! k" := (match m $? k with Some n => n | None => 0 end)%Z (at level 30).
 
 Module IMPLang.
+  (* Definition of the IMP language and denotational/operational semantics of expressions *)
   Notation Value := Z.
 
   Inductive BinopKind :=
@@ -52,12 +53,12 @@ Module IMPLang.
     destruct v; simplify; auto.
   Qed.
 
-  Definition interp_unaopkind (k : UnaopKind) : Value -> Value :=
+  Definition denote_unaopkind (k : UnaopKind) : Value -> Value :=
     match k with
      | Lnot => fun x => bool_to_value (negb (value_to_bool x))
     end.
 
-  Definition interp_binopkind (k : BinopKind) : Value -> Value -> Value :=
+  Definition denote_binopkind (k : BinopKind) : Value -> Value -> Value :=
     match k with
      | Plus => fun x y => x + y
      | Minus => fun x y => x - y
@@ -73,15 +74,17 @@ Module IMPLang.
     | Const n => n
     | Var x => va $! x
     | Unaop op e =>
-      let opv := (interp_unaopkind op) in
+      let opv := (denote_unaopkind op) in
       let ev := eval_exp va e in
       opv ev
     | Binop op e1 e2 =>
-      let opv := (interp_binopkind op) in
+      let opv := (denote_binopkind op) in
       let e1v := eval_exp va e1 in
       let e2v := eval_exp va e2 in
       opv e1v e2v
     end.
+  Definition denote_exp (e : Exp) : valuation -> Value :=
+    fun va => eval_exp va e.
 
   Coercion Const : Z >-> Exp.
   Coercion Var : string >-> Exp.
@@ -852,7 +855,6 @@ Module IMPHoare.
       himply q q' ->
       hoare_triple p' c q'.
 
-
     Lemma HT_Post: forall p c q q',
       hoare_triple p c q ->
       himply q q' ->
@@ -959,25 +961,214 @@ Module IMPHoare.
       - intuition.
       - eapply himply_sem; eauto.
     Qed.
-
     (* Of course we cannot have a completeness theorem for hoare logic... *)
   End HoareAssign.
   Export HoareAssign.
 
-  Module WeakestPrecondition.
-  (* TODO *)
-  End WeakestPrecondition.
+  Module HoareAnnot.
+    (* Annotated programs make vcgen possible. They are called 'decorated programs' in SF. *)
+    Inductive AnnotCmd :=
+    | ASkip
+    | AAssign (x : var) (e : Exp)
+    | ASeq (c1 c2 : AnnotCmd)
+    | AIf (be : Exp) (th el : AnnotCmd)
+    | AWhile (inv : valuation -> Prop) (be : Exp) (body : AnnotCmd)
+    | AAssert (a : valuation -> bool)
+    | AAssume (a : valuation -> bool).
+
+    (* to connect annotated commands and original commands *)
+    Fixpoint strip_annot (ac : AnnotCmd) : Cmd :=
+      match ac with
+       | ASkip => Skip
+       | AAssign x e => Assign x e
+       | ASeq c1 c2 => Seq (strip_annot c1) (strip_annot c2)
+       | AIf be th el => If be (strip_annot th) (strip_annot el)
+       | AWhile inv be body => While be (strip_annot body)
+       | AAssert a => Assert a
+       | AAssume a => Assume a
+      end.
+
+    (* TODO: wlp *)
+  End HoareAnnot.
 End IMPHoare.
 
 Module Stack_machine.
   Import IMPLang.
 
-  Inductive stack_cmd :=
-  | SUnary (op : UnaopKind)
-  | SBinary (op : BinopKind)
-  | SConst (v : Value).
-  (* TODO *)
+  Inductive stack_instr :=
+  | StkConst (v : Value)
+  | StkLoadVar (x : var)
+  | StkStoreVar (x : var)
+  | StkUnary (op : UnaopKind)
+  | StkBinary (op : BinopKind)
+  | StkCondGoto (offset : Z)
+  | StkNoop
+  | StkHalt
+  | StkUnreachable.
 
+  (* Actually stack is a list (consecutive nat -> Value).
+     During compilation each variable will be assigned an index.
+     For simplifity we use valuation (var -> Value),
+      which combines the frame result (var -> nat) and the stack lookup (nat -> Value).
+
+     We structurally separate variable section and expression section.
+     The former is the `valuation`, and the latter is the `list Value`.
+
+     TODO: Should pc be nat or Z?
+   *)
+  Definition stk_state := (nat * list stack_instr * valuation * list Value)%type. (* (pc, instrs, vars, expr stack) *)
+
+  Definition cur_instr (s : stk_state) : stack_instr :=
+    match s with
+    | (pc, instrs, _, _) => nth pc instrs StkUnreachable
+    end.
+
+  Definition add_pc_offset (pc : nat) (offset : Z) := Z.to_nat (Z_of_nat pc + offset).
+  Definition add_pc_1 (pc : nat) := (pc + 1)%nat.
+
+  Inductive stk_step: stk_state -> stk_state -> Prop :=
+  | StkStep_Const: forall pc instrs vstk estk v,
+    cur_instr (pc, instrs, vstk, estk) = StkConst v ->
+    stk_step (pc, instrs, vstk, estk)
+             (add_pc_1 pc, instrs, vstk, v :: estk)
+  | StkStep_LoadVar: forall pc instrs vstk estk x,
+    cur_instr (pc, instrs, vstk, estk) = StkLoadVar x ->
+    stk_step (pc, instrs, vstk, estk)
+             (add_pc_1 pc, instrs, vstk, (vstk $! x) :: estk)
+  | StkStep_StoreVar: forall pc instrs vstk estk x arg,
+    cur_instr (pc, instrs, vstk, estk) = StkStoreVar x ->
+    stk_step (pc, instrs, vstk, arg :: estk)
+             (add_pc_1 pc, instrs, vstk $+ (x, arg), estk)
+  | StkStep_Unary: forall pc instrs vstk estk arg op,
+    cur_instr (pc, instrs, vstk, estk) = StkUnary op ->
+    stk_step (pc, instrs, vstk, arg :: estk)
+             (add_pc_1 pc, instrs, vstk, (denote_unaopkind op arg) :: estk)
+  | StkStep_Binary: forall pc instrs vstk estk arg0 arg1 op,
+    cur_instr (pc, instrs, vstk, estk) = StkBinary op ->
+    stk_step (pc, instrs, vstk, arg1 :: arg0 :: estk)
+             (add_pc_1 pc, instrs, vstk, (denote_binopkind op arg0 arg1) :: estk)
+  | StkStep_CondGoto: forall pc instrs vstk estk arg offset,
+    cur_instr (pc, instrs, vstk, estk) = StkCondGoto offset ->
+    stk_step (pc, instrs, vstk, arg :: estk)
+             (if value_to_bool arg then add_pc_offset pc offset else add_pc_1 pc, instrs, vstk, estk)
+  | StkStep_Noop: forall pc instrs vstk estk,
+    cur_instr (pc, instrs, vstk, estk) = StkNoop ->
+    stk_step (pc, instrs, vstk, estk) (add_pc_1 pc, instrs, vstk, estk).
+
+  (* start from pc=0, empty variable map and empty expression stack *)
+  Definition stk_trsys_with_init (pc : nat) (instrs : list stack_instr)
+      (vstk : valuation) (estk : list Value): trsys stk_state := {|
+    Initial := fun x => x = (pc, instrs, vstk, estk);
+    Step := stk_step;
+  |}.
+
+  Fixpoint compile_exp_to_stk (e : Exp) : list stack_instr :=
+    match e with
+    | Const n => [ StkConst n ]
+    | Var x => [ StkLoadVar x ]
+    | Unaop op e => compile_exp_to_stk e ++ [ StkUnary op ]
+    | Binop op e1 e2 => compile_exp_to_stk e1 ++ compile_exp_to_stk e2 ++ [ StkBinary op ]
+    end.
+
+  Fixpoint compile_cmd_to_stk (c : Cmd) : list stack_instr :=
+    match c with
+    | Skip =>
+      [ StkNoop ]
+    | Assign x e =>
+      compile_exp_to_stk e ++ [ StkStoreVar x ]
+    | Seq c1 c2 =>
+      compile_cmd_to_stk c1 ++ compile_cmd_to_stk c2
+    | If be th el =>
+      let thinstrs := compile_cmd_to_stk th in
+      let elinstrs := compile_cmd_to_stk el in
+      let beinstrs := compile_exp_to_stk be in
+        beinstrs ++ [ StkCondGoto (1 + Z_of_nat (length elinstrs) + 1) ] ++
+        elinstrs ++ [ StkConst 1 ; StkCondGoto (1 + Z_of_nat (length thinstrs)) ] ++
+        thinstrs
+    | While be body =>
+      let bodyinstrs := compile_cmd_to_stk body in
+      let beinstrs := compile_exp_to_stk be in
+      beinstrs ++ [ StkUnary Lnot ; StkCondGoto (1 + Z_of_nat (length bodyinstrs) + 1) ] ++
+      bodyinstrs ++ [ StkConst 1 ; StkCondGoto (- 1 - Z_of_nat (length bodyinstrs) - 2 - (Z_of_nat (length beinstrs))) ]
+    | Assert a =>
+      [ StkNoop ] (* TODO: assert previously should use embedded language i.e. Exp than valuation -> bool *)
+    | Assume a =>
+      [ StkNoop ]
+    end.
+
+  Compute compile_cmd_to_stk ex0_code.
+  (* TODO: should be exists *)
+  Example ex0_stk: forall pc instrs vstk estk,
+    instrs = compile_cmd_to_stk ex0_code ++ [ StkHalt ] ->
+    reachable (stk_trsys_with_init 0 instrs $0 nil) (pc, instrs, vstk, estk) ->
+    cur_instr (pc, instrs, vstk, estk) = StkHalt ->
+    vstk $! "x" = 4.
+  Proof.
+    intros.
+    (* initial *)
+    invert H0. invert H2.
+    simplify.
+
+    invert H3; try discriminate.
+      invert H; try discriminate.
+      invert H7; unfold add_pc_1 in *.
+
+    invert H0; try discriminate.
+      invert H; try discriminate.
+      invert H8; unfold add_pc_1 in *.
+
+Ltac stk_one_step :=
+    match goal with
+    | [ H : stk_step^* _ _ |- _ ] => invert H; try discriminate
+    end;
+    match goal with
+    | [ H : stk_step _ _ |- _ ] => invert H; try discriminate
+    end;
+    match goal with
+    | [ H : cur_instr _ = _ |- _ ] => invert H; unfold add_pc_1 in *; unfold add_pc_offset in *
+    end;
+    simplify. (* 'simplify' is very time consuming *)
+
+    (* this will be time consuming *)
+    (* Uncomment to execute. *)
+    (* do 40 stk_one_step. Qed. *)
+  Abort.
+
+
+  Inductive next_instrs_match : stk_state -> list stack_instr -> Prop :=
+  | mk_next_instrs_match: forall pc ibefore instrs iafter vstk estk,
+    length ibefore = pc ->
+    next_instrs_match (pc, ibefore ++ instrs ++ iafter, vstk, estk) instrs.
+
+  Lemma compile_exp_ok: forall e einstrs,
+    compile_exp_to_stk e = einstrs ->
+    forall pc instrs vstk estk,
+      next_instrs_match (pc, instrs, vstk, estk) einstrs ->
+      stk_step^* (pc, instrs, vstk, estk) ((pc + length einstrs)%nat, instrs, vstk, eval_exp vstk e :: estk).
+  Proof.
+    induct e; simplify; subst; simplify.
+    - invert H0. econstructor. eapply StkStep_Const.
+      simplify. eapply nth_middle. econstructor.
+    - invert H0. econstructor. eapply StkStep_LoadVar.
+      simplify. eapply nth_middle. econstructor.
+    - invert H0. rewrite <- app_assoc.
+      eapply trc_trans. apply IHe. auto. constructor; auto.
+      simplify. econstructor. apply StkStep_Unary.
+      rewrite app_assoc. rewrite <- app_length. eapply nth_middle.
+      rewrite app_length; simplify. unfold add_pc_1.
+      repeat rewrite plus_assoc. econstructor.
+    - invert H0. repeat rewrite <- app_assoc.
+      eapply trc_trans. apply IHe1. auto. constructor; auto.
+      eapply trc_trans. apply IHe2. auto. rewrite <- app_length. rewrite app_assoc. constructor; auto.
+      simplify. econstructor. apply StkStep_Binary.
+      repeat rewrite app_assoc. repeat rewrite <- app_length. eapply nth_middle.
+      rewrite app_length; simplify. unfold add_pc_1. rewrite app_length. simplify.
+      repeat rewrite plus_assoc. econstructor.
+  Qed.
+
+  Import Small_step.
+  (* Now it's to prove simulation relation. *)
+  Definition relate_step_stk : step_state -> stk_state -> Prop. Admitted. (* TODO *)
 End Stack_machine.
 
 Module Unused.
@@ -997,6 +1188,48 @@ Module Unused.
   repeat (destruct p; auto).
   lia.
   Qed.
+
+  (* when next_instrs_match was not defined like
+      Definition next_instrs_match (s : stk_state) (c : list stack_instr) : Prop :=
+        match s with
+        | (pc, instrs, vstk, estk) =>
+          sublist pc (pc + length c) instrs = c
+        end.
+     this module is required *)
+  Module ShouldBeInCoqStd.
+  Definition sublist (from to : nat) {A : Set} (l : list A) : list A :=
+    firstn (to - from)%nat (skipn from l).
+
+  (* there is firstn_firstn but no skipn_skipn. *)
+  Lemma skipn_skipn: forall a b {A : Set} (l : list A),
+    skipn a (skipn b l) = skipn (a+b) l.
+  Proof.
+    induct b; simplify.
+    replace (a+0)%nat with a by lia; auto.
+    cases l. repeat rewrite skipn_nil; auto.
+    replace (a + S b)%nat with (S (a + b))%nat by lia.
+    simplify. apply IHb.
+  Qed.
+
+  Lemma sublist_correct: forall from to {A : Set} (l : list A),
+    (from < to)%nat ->
+    l = firstn from l ++ sublist from to l ++ skipn to l.
+  Proof.
+    intros. unfold sublist.
+    rewrite <- (firstn_skipn from l) at 1. f_equal.
+    rewrite <- (firstn_skipn (to - from) (skipn from l)) at 1. f_equal.
+    rewrite skipn_skipn. replace (to - from + from)%nat with to by lia. auto.
+  Qed.
+
+  Lemma sublist_nonempty: forall from len {A : Set} (l : list A),
+    length (sublist from (from + len)%nat l) = len ->
+    (from + len <= length l)%nat.
+  Proof.
+    unfold sublist; simplify.
+    replace (from + len - from)%nat with len in * by lia.
+    assert (length (skipn from l) >= len)%nat. admit. admit.
+  Abort.
+  End ShouldBeInCoqStd.
 End Unused.
 
 Module Failed.

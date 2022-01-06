@@ -1060,6 +1060,7 @@ Module Stack_machine.
   | StkNoop
   | StkHalt
   | StkUnreachable.
+  Arguments app: simpl never. (* so sequences of instrs are always in terms of ++ *)
 
   (* Actually stack is a list (consecutive nat -> Value).
      During compilation each variable will be assigned an index.
@@ -1143,28 +1144,34 @@ Module Stack_machine.
   Fixpoint compile_cmd_to_stk (c : Cmd) : list stack_instr :=
     match c with
     | Skip =>
-      [ StkNoop ]
+      [ ] (* not no-op? because that makes proof go bad *)
     | Assign x e =>
       compile_exp_to_stk e ++ [ StkStoreVar x ]
     | Seq c1 c2 =>
       compile_cmd_to_stk c1 ++ compile_cmd_to_stk c2
     | If be th el =>
+      let beinstrs := compile_exp_to_stk be in
       let thinstrs := compile_cmd_to_stk th in
       let elinstrs := compile_cmd_to_stk el in
-      let beinstrs := compile_exp_to_stk be in
-        beinstrs ++ [ StkCondGoto (1 + Z_of_nat (length elinstrs) + 1) ] ++
-        elinstrs ++ [ StkConst 1 ; StkCondGoto (1 + Z_of_nat (length thinstrs)) ] ++
-        thinstrs
+      let eltail := [ StkConst 1 ; StkCondGoto (1 + Z_of_nat (length thinstrs)) ] in
+      let betail := [ StkCondGoto (1 + (Z_of_nat (length elinstrs + length eltail))) ] in
+        beinstrs ++ betail ++ elinstrs ++ eltail ++ thinstrs
     | While be body =>
       let bodyinstrs := compile_cmd_to_stk body in
       let beinstrs := compile_exp_to_stk be in
-      beinstrs ++ [ StkUnary Lnot ; StkCondGoto (1 + Z_of_nat (length bodyinstrs) + 1) ] ++
+      beinstrs ++ [ StkUnary Lnot ; StkCondGoto (1 + Z_of_nat (length bodyinstrs) + 2) ] ++
       bodyinstrs ++ [ StkConst 1 ; StkCondGoto (- 1 - Z_of_nat (length bodyinstrs) - 2 - (Z_of_nat (length beinstrs))) ]
     | Assert a =>
       [ StkNoop ] (* TODO: assert previously should use embedded language i.e. Exp than valuation -> bool *)
     | Assume a =>
       [ StkNoop ]
     end.
+
+  (* not used but to keep in line with  instr_at instrs_at cont_at *)
+  Inductive cmd_at : list stack_instr -> nat -> Cmd -> Prop := 
+  | MkCmdAt: forall instrs pc c,
+    instrs_at instrs pc (compile_cmd_to_stk c) ->
+    cmd_at instrs pc c.
 
   Compute compile_cmd_to_stk ex0_code.
 (*
@@ -1206,53 +1213,86 @@ Ltac stk_one_step :=
   Abort.
 *)
 
-  Lemma instr_at_ibefore: forall ibefore instr iafter,
-    instr_at (ibefore ++ instr :: iafter) (length ibefore) instr.
-  Proof.
-    econstructor. rewrite nth_middle. auto.
-  Qed.
-  Lemma instr_at_ibefore': forall ibefore instr iafter,
+  Lemma instr_at_ibefore_1: forall ibefore instr iafter,
     instr_at (ibefore ++ [ instr ] ++ iafter) (length ibefore) instr.
   Proof.
-    apply instr_at_ibefore.
+    Arguments app : simpl nomatch.
+    simplify. econstructor. rewrite nth_middle. auto.
   Qed.
-  Lemma instr_at_ibefore'': forall ibefore instrs iafter i,
+  Arguments app : simpl never.
+  Lemma instr_at_ibefore_2: forall ibefore0 ibefore1 instr iafter,
+    instr_at (ibefore0 ++ ibefore1 ++ [ instr ] ++ iafter) (length ibefore0 + length ibefore1) instr.
+  Proof.
+    intros.
+    repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore_1).
+  Qed.
+  Lemma instr_at_ibefore_3: forall ibefore0 ibefore1 ibefore2 instr iafter,
+    instr_at (ibefore0 ++ ibefore1 ++ ibefore2 ++ [ instr ] ++ iafter) (length ibefore0 + length ibefore1 + length ibefore2) instr.
+  Proof.
+    intros.
+    repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore_1).
+  Qed.
+  Lemma instrs_at_ibefore_1: forall ibefore instrs iafter i,
     (i < length instrs)%nat ->
     instr_at (ibefore ++ instrs ++ iafter) (length ibefore + i)%nat (nth i instrs StkUnreachable).
   Proof.
     econstructor. rewrite app_nth2_plus. rewrite app_nth1; auto.
   Qed.
-  Lemma instr_at_ibefore_2': forall ibefore0 ibefore1 instr iafter,
-    instr_at (ibefore0 ++ ibefore1 ++ [ instr ] ++ iafter) (length ibefore0 + length ibefore1) instr.
-  Proof.
-    intros.
-    repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore').
-  Qed.
-  Lemma instr_at_ibefore_3': forall ibefore0 ibefore1 ibefore2 instr iafter,
-    instr_at (ibefore0 ++ ibefore1 ++ ibefore2 ++ [ instr ] ++ iafter) (length ibefore0 + length ibefore1 + length ibefore2) instr.
-  Proof.
-    intros.
-    repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore').
-  Qed.
-  Lemma instr_at_ibefore_2: forall ibefore0 ibefore1 instr iafter,
-    instr_at (ibefore0 ++ ibefore1 ++ instr :: iafter) (length ibefore0 + length ibefore1) instr.
-  Proof.
-    intros.
-    repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore').
-  Qed.
-  Lemma instr_at_ibefore_3: forall ibefore0 ibefore1 ibefore2 instr iafter,
-    instr_at (ibefore0 ++ ibefore1 ++ ibefore2 ++ instr :: iafter) (length ibefore0 + length ibefore1 + length ibefore2) instr.
-  Proof.
-    intros.
-    repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore').
-  Qed.
 
   (* Thank compilerverif for the auto and autorewrite *)
-  Hint Resolve instr_at_ibefore instr_at_ibefore' instr_at_ibefore_2' instr_at_ibefore_3' 
-    instr_at_ibefore_2 instr_at_ibefore_3: instrs.
-  Hint Rewrite app_assoc_reverse app_length plus_assoc Nat.add_0_r : instrs.
+  Hint Resolve instr_at_ibefore_1 instr_at_ibefore_2 instr_at_ibefore_3 : instrs.
 
-  Ltac combine_before2 := rewrite <- app_length; rewrite app_assoc.
+  (* Normalize instr_at: make instrs and pc addition to be rassoc. Split len(l1++l2). *)
+  Hint Rewrite app_assoc_reverse app_length plus_assoc_reverse : instrs.
+
+  Open Scope nat.
+  (* instrs_at (done0 + done1 + rest) (len done0 + len done1 + x) y
+     ===>
+     instrs_at (done3         + rest) (len done3             + x) y
+   *)
+  Ltac instr_at_fold_one :=
+    try match goal with
+    | [ |- instrs_at (?done ++ _ ++ _) (length ?done + (?l1 + ?l2)) _ ] => rewrite plus_assoc (*rewrite (plus_assoc (length ?done) l1 l2)*)
+    end;
+    match goal with
+    | [ |- (instrs_at (?a ++ ?b ++ _)) (length ?a + ?l) _ ] =>
+      rewrite app_assoc at 1;
+      replace (length a + l) with (length a + length b) by auto;
+      rewrite <- app_length at 1
+    | [ |- (instrs_at (?a ++ ?b ++ _ )) (length ?a + ?l + _) _ ] =>
+      rewrite app_assoc at 1;
+      replace (length a + l) with (length a + length b) by auto;
+      rewrite <- app_length at 1
+    end.
+  (* instrs_at (l1 ++ ... ++ lk ++ rest) (len l1 + ... + len lk) lk
+     ===> T
+  *)
+  Ltac instr_at_fold_all :=
+    repeat match goal with
+    | [ |- instrs_at (_ ++ _ ++ _) (((?a0 + ?a1) + ?b) + ?c) _ ] => rewrite <- (plus_assoc (a0+a1) b c)
+    end;
+    repeat instr_at_fold_one; constructor; auto with instrs.
+
+  (*
+    stk_step (done0 ++ done1 ++ rest) (len done0 + len done1 + _, _, _) _
+    ===>
+    stk_step (done2          ++ rest) (len done2             + _, _, _) _
+   *)
+  Ltac stk_step_fold_one :=
+    match goal with
+    | [ |- stk_step (?done0 ++ ?done1 ++ ?rest) ((length ?done0 + length ?done1)%nat, _, _) _ ] =>
+      rewrite (app_assoc done0 done1 rest);
+      rewrite <- (app_length done0 done1)
+    | [ |- stk_step (?done0 ++ ?done1 ++ ?rest) ((length ?done0 + length ?done1 + _)%nat, _, _) _ ] =>
+      rewrite (app_assoc done0 done1 rest);
+      rewrite <- (app_length done0 done1)
+    | [ |- (stk_step (?done0 ++ ?done1 ++ ?rest)) ^* ((length ?done0 + length ?done1)%nat, _, _) _ ] =>
+      rewrite (app_assoc done0 done1 rest);
+      rewrite <- (app_length done0 done1)
+    | [ |- (stk_step (?done0 ++ ?done1 ++ ?rest)) ^* ((length ?done0 + length ?done1 + _)%nat, _, _) _ ] =>
+      rewrite (app_assoc done0 done1 rest);
+      rewrite <- (app_length done0 done1)
+    end.
 
   Lemma compile_exp_ok: forall e einstrs,
     compile_exp_to_stk e = einstrs ->
@@ -1260,22 +1300,20 @@ Ltac stk_one_step :=
       instrs_at instrs pc einstrs ->
       (stk_step instrs)^* (pc, vstk, estk) ((pc + length einstrs)%nat, vstk, eval_exp vstk e :: estk).
   Proof.
-    induct e; simplify; subst; simplify.
-    - invert H0.
-      econstructor. eapply StkStep_Const. eauto with instrs.
+    induct e; simplify; subst; simplify; invert H0.
+    - econstructor. eapply StkStep_Const. eauto with instrs.
       econstructor.
-    - invert H0.
-      econstructor. eapply StkStep_LoadVar. eauto with instrs.
+    - econstructor. eapply StkStep_LoadVar. eauto with instrs.
       econstructor.
-    - invert H0. autorewrite with instrs; simplify.
-      eapply trc_trans. apply IHe. auto. constructor. auto.
+    - autorewrite with instrs.
+      eapply trc_trans. apply IHe. auto. constructor. auto. stk_step_fold_one. 
       econstructor. eapply StkStep_Unary. eauto with instrs.
-      econstructor.
-    - invert H0. autorewrite with instrs; simplify.
-      eapply trc_trans. apply IHe1. auto. constructor; auto.
-      eapply trc_trans. apply IHe2. auto. combine_before2. constructor; auto.
+      autorewrite with instrs. econstructor.
+    - autorewrite with instrs.
+      eapply trc_trans. apply IHe1. auto. constructor; auto. stk_step_fold_one. 
+      eapply trc_trans. apply IHe2. auto. instr_at_fold_all. stk_step_fold_one. 
       econstructor. apply StkStep_Binary. eauto with instrs.
-      econstructor.
+      autorewrite with instrs. econstructor.
   Qed.
 
   Import Small_step.
@@ -1291,19 +1329,107 @@ Ltac stk_one_step :=
 
   Module CompilCorrectCps.
     Import Small_cps.
-    Inductive relate_cont_stk : Cont -> Z -> list instr -> Prop :=
-    | MkRelateContPc_Cont_Stop: forall pc instrs vstk estk,
-      instr_at (pc, instrs, vstk, estk) = StkHalt ->
-      relate_cont_stk Cont_Stop (pc, instrs, vstk, estk)
-    | MkRelateContPc_Cont_Seq: forall pc instrs vstk vstk' estk estk' c k,
-      next_instrs_match (pc, instrs, vstk, estk) (compile_cmd_to_stk c) ->
-      relate_cont_stk k ( + length (compile_cmd_to_stk c), instrs, vstk', estk')%nat ->
-      relate_cont_stk (Cont_Seq c k) (pc, instrs, vstk, estk)
-    | MkRelateContPc_Cont_While: forall pc pc' instrs vstk vstk' estk estk' c k,
-      instr_at (pc, instrs, vstk, estk) = StkHalt ->
-      next_instrs_match (
-      relate_cont_stk k (pc + 1, instrs, vstk', estk') ->
-      relate_cont_stk (Cont_While be body k) (pc, instrs, vstk, estk)
+    Arguments app : simpl never.
+    Open Scope nat.
+    Definition pcadd (pc : nat) (offset : Z) : nat := Z.to_nat (Z_of_nat pc + offset)%Z.
+
+    (* Effect of executing all the way from `pc` is same as executing the continuation. *)
+    Inductive cont_at (instrs : list stack_instr) : nat -> Cont -> Prop :=
+    | RelateContPc_Cont_Stop: forall pc,
+      instr_at instrs pc StkHalt ->
+      cont_at instrs pc Cont_Stop
+    | RelateContPc_Cont_Seq: forall pc c k cinstrs,
+      cinstrs = compile_cmd_to_stk c ->
+      instrs_at instrs pc cinstrs ->
+      cont_at instrs (pc + length cinstrs) k ->
+      cont_at instrs pc (Cont_Seq c k)
+    | RelateContPc_Cont_While: forall pc be body k offset whileinstrs,
+      whileinstrs = compile_cmd_to_stk (While be body) ->
+      instr_at instrs pc (StkCondGoto offset) ->
+      instrs_at instrs (pcadd pc offset) whileinstrs ->
+      cont_at instrs (pcadd pc offset + length whileinstrs) k ->
+      cont_at instrs pc (Cont_While be body k)
+    (* Without RelateContPc_Goto we cannot prove simulation for If *)
+    | RelateContPc_Goto: forall pc k offset,
+      instrs_at instrs pc [ StkConst 1 ; StkCondGoto offset ] ->
+      cont_at instrs (pcadd pc (1 + offset)) k ->
+      cont_at instrs pc k.
+
+    (* Since one step of cps incorporates many steps of stk e.g. expr evaluation,
+       we do not relate the intermediate steps; thus estk is nil.
+
+        cps ----------------------------------> cps'
+         ~                                       ~
+        stk --> stk0 --> stk1 --> ... --------> stk'
+     *)
+    Inductive relate_cps_stk (instrs : list stack_instr) : cps_state -> stk_state -> Prop :=
+    | MkRelateCpsStk: forall va c k pc vstk cinstrs,
+      va = vstk ->  
+      cinstrs = compile_cmd_to_stk c ->
+      instrs_at instrs pc cinstrs ->
+      cont_at instrs (pc + length cinstrs) k ->
+      relate_cps_stk instrs (va, c, k) (pc, vstk, nil).
+
+    Hint Constructors instr_at instrs_at : instrs.
+
+    Lemma instr_len_single: forall instr : stack_instr, 1 = length [ instr ].
+    Proof. cbv; auto. Qed.
+
+    Lemma stepwise_refinement_cps_stk: forall instrs cs ss,
+      relate_cps_stk instrs cs ss ->
+      forall cs',
+        cps_step cs cs' ->
+        exists ss',
+          (stk_step instrs)^* ss ss' /\ relate_cps_stk instrs cs' ss'.
+    Proof.
+      invert 2; invert H; simplify.
+      - (* computation of Assign *)
+        invert H6.
+        autorewrite with instrs. eexists. split.
+        + eapply trc_trans.
+          apply compile_exp_ok; auto with instrs.
+          eapply TrcFront. apply StkStep_StoreVar. auto with instrs.
+          econstructor.
+        + econstructor; auto. 
+          rewrite app_assoc. rewrite app_assoc.
+          rewrite <- (app_nil_l iafter).
+          econstructor. repeat rewrite app_length. auto.
+          autorewrite with instrs in *. assumption.
+      - invert H6.
+        autorewrite with instrs. 
+        cases (value_to_bool (eval_exp vstk be)); try rewrite Heq in *; eexists.
+
+        + split. (* then *)
+          *
+            eapply trc_trans. apply compile_exp_ok; auto with instrs.
+            eapply TrcFront. eapply StkStep_CondGoto; auto with instrs.
+              rewrite Heq.
+              repeat (rewrite Z2Nat.inj_add in *; try rewrite Heq; try lia; try rewrite Nat2Z.id).
+              replace (Z.to_nat 1) with 1 by (cbv; auto).
+            apply TrcRefl.
+          *
+            econstructor; auto. autorewrite with instrs.
+            instr_at_fold_all.
+            autorewrite with instrs in *. assumption.
+        + split. (* else *)
+          * 
+            eapply trc_trans. apply compile_exp_ok; auto with instrs.
+            eapply TrcFront. eapply StkStep_CondGoto; auto with instrs.
+              rewrite Heq.
+              repeat (rewrite Z2Nat.inj_add in *; try rewrite Heq; try lia; try rewrite Nat2Z.id).
+              replace (Z.to_nat 1) with 1 by (cbv; auto).
+            apply TrcRefl.
+          *
+            econstructor; auto. autorewrite with instrs.
+            instr_at_fold_all.
+
+            eapply RelateContPc_Goto. instr_at_fold_all.
+              unfold pcadd.
+              repeat (rewrite Z2Nat.inj_add in *; try rewrite Heq; try lia; try rewrite Nat2Z.id).
+              replace (Z.to_nat 1) with 1 by (cbv; auto).
+              repeat rewrite plus_assoc.
+            autorewrite with instrs in *. assumption.
+      - invert H. (* seems should make pc Z or offset nat *)
   End CompilCorrectCps.
 
 End Stack_machine

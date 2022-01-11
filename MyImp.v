@@ -1056,12 +1056,13 @@ Module Stack_machine.
   | StkStoreVar (x : var)
   | StkUnary (op : UnaopKind)
   | StkBinary (op : BinopKind)
-  | StkCondGoto (offset : Z)
+  | StkCondGoto (bwdir : bool) (offset : nat)
   | StkNoop
   | StkHalt
   | StkUnreachable.
   Arguments app: simpl never. (* so sequences of instrs are always in terms of ++ *)
-
+  Definition StkCondGotoBw := StkCondGoto true.
+  Definition StkCondGotoFw := StkCondGoto false.
   (* Actually stack is a list (consecutive nat -> Value).
      During compilation each variable will be assigned an index.
      For simplifity we use valuation (var -> Value),
@@ -1082,6 +1083,7 @@ Module Stack_machine.
   | MkInstrAt: forall instrs pc instr,
     instr = nth pc instrs StkUnreachable ->
     instr_at instrs pc instr.
+
   (* could be defined as `sublist (pc, pc + length instrs) = instrs`, but that's more cumbersome *)
   Inductive instrs_at : list stack_instr -> nat -> list stack_instr -> Prop :=
   | MkInstrsAt: forall ibefore instrs iafter pc,
@@ -1089,6 +1091,12 @@ Module Stack_machine.
     instrs_at (ibefore ++ instrs ++ iafter) pc instrs.
 
   Open Scope nat.
+  Definition condgoto_dst arg (bwdir : bool) offset pc :=
+    if value_to_bool arg then
+      if bwdir then pc - offset else pc + offset
+    else
+      pc + 1.
+
   Inductive stk_step (instrs : list stack_instr) : stk_state -> stk_state -> Prop :=
   | StkStep_Const: forall pc vstk estk v,
     instr_at instrs pc (StkConst v) ->
@@ -1115,16 +1123,15 @@ Module Stack_machine.
     stk_step instrs
       (pc, vstk, arg1 :: arg0 :: estk)
       (pc + 1, vstk, (denote_binopkind op arg0 arg1) :: estk)
-  | StkStep_CondGoto: forall pc vstk estk arg offset,
-    instr_at instrs pc (StkCondGoto offset) ->
+  | StkStep_CondGoto: forall pc vstk estk arg bwdir offset,
+    instr_at instrs pc (StkCondGoto bwdir offset) ->
     stk_step instrs
       (pc, vstk, arg :: estk)
-      (Z.to_nat (Z_of_nat pc + if value_to_bool arg then offset else 1)%Z, vstk, estk)
+      (condgoto_dst arg bwdir offset pc, vstk, estk)
   | StkStep_Noop: forall pc vstk estk,
     instr_at instrs pc StkNoop ->
     stk_step instrs (pc, vstk, estk)
       (pc + 1, vstk, estk).
-  Close Scope nat.
 
   (* start from pc=0, empty variable map and empty expression stack *)
   Definition stk_trsys_with_init (pc : nat) (instrs : list stack_instr)
@@ -1150,69 +1157,38 @@ Module Stack_machine.
     | Seq c1 c2 =>
       compile_cmd_to_stk c1 ++ compile_cmd_to_stk c2
     | If be th el =>
-      let beinstrs := compile_exp_to_stk be in
-      let thinstrs := compile_cmd_to_stk th in
-      let elinstrs := compile_cmd_to_stk el in
-      let eltail := [ StkConst 1 ; StkCondGoto (1 + Z_of_nat (length thinstrs)) ] in
-      let betail := [ StkCondGoto (1 + (Z_of_nat (length elinstrs + length eltail))) ] in
-        beinstrs ++ betail ++ elinstrs ++ eltail ++ thinstrs
+      compile_exp_to_stk be ++
+      [ StkCondGotoFw (1 + length (compile_cmd_to_stk el) + 1 + 1) ] ++
+      compile_cmd_to_stk el ++
+      [ StkConst 1 ] ++
+      [ StkCondGotoFw (1 + length (compile_cmd_to_stk th)) ] ++
+      compile_cmd_to_stk th 
     | While be body =>
-      let bodyinstrs := compile_cmd_to_stk body in
-      let beinstrs := compile_exp_to_stk be in
-      beinstrs ++ [ StkUnary Lnot ; StkCondGoto (1 + Z_of_nat (length bodyinstrs) + 2) ] ++
-      bodyinstrs ++ [ StkConst 1 ; StkCondGoto (- 1 - Z_of_nat (length bodyinstrs) - 2 - (Z_of_nat (length beinstrs))) ]
+      compile_exp_to_stk be ++
+      [ StkUnary Lnot ] ++
+      [ StkCondGotoFw (1 + length (compile_cmd_to_stk body) + 1 + 1) ] ++
+      compile_cmd_to_stk body ++ 
+      [ StkConst 1 ] ++ 
+      [ StkCondGotoBw (1 + length (compile_cmd_to_stk body) + 1 + 1 + length (compile_exp_to_stk be)) ]
+      (* This writing makes automation easier *)
     | Assert a =>
       [ StkNoop ] (* TODO: assert previously should use embedded language i.e. Exp than valuation -> bool *)
     | Assume a =>
       [ StkNoop ]
     end.
 
-  (* not used but to keep in line with  instr_at instrs_at cont_at *)
-  Inductive cmd_at : list stack_instr -> nat -> Cmd -> Prop := 
-  | MkCmdAt: forall instrs pc c,
-    instrs_at instrs pc (compile_cmd_to_stk c) ->
-    cmd_at instrs pc c.
-
   Compute compile_cmd_to_stk ex0_code.
-(*
-  (* TODO: should be exists *)
-  Example ex0_stk: forall pc instrs vstk estk,
-    instrs = compile_cmd_to_stk ex0_code ++ [ StkHalt ] ->
-    reachable (stk_trsys_with_init 0 instrs $0 nil) (pc, instrs, vstk, estk) ->
-    instr_at (pc, instrs, vstk, estk) = StkHalt ->
-    vstk $! "x" = 4.
+
+  Example ex0_stk: Prop.
   Proof.
-    intros.
-    (* initial *)
-    invert H0. invert H2.
-    simplify.
-
-    invert H3; try discriminate.
-      invert H; try discriminate.
-      invert H7; unfold add_pc_1 in *.
-
-    invert H0; try discriminate.
-      invert H; try discriminate.
-      invert H8; unfold add_pc_1 in *.
-
-Ltac stk_one_step :=
-    match goal with
-    | [ H : stk_step^* _ _ |- _ ] => invert H; try discriminate
-    end;
-    match goal with
-    | [ H : stk_step _ _ |- _ ] => invert H; try discriminate
-    end;
-    match goal with
-    | [ H : instr_at _ = _ |- _ ] => invert H; unfold add_pc_1 in *; unfold add_pc in *
-    end;
-    simplify. (* 'simplify' is very time consuming *)
-
-    (* this will be time consuming *)
-    (* Uncomment to execute. *)
-    (* do 40 stk_one_step. Qed. *)
   Abort.
-*)
 
+  Lemma instrs_at_nil: forall ibefore iafter,
+    instrs_at (ibefore ++ iafter) (length ibefore) [].
+  Proof.
+    simplify. rewrite <- (app_nil_r ibefore). rewrite <- app_assoc. 
+    econstructor. rewrite app_length. auto.
+  Qed.
   Lemma instr_at_ibefore_1: forall ibefore instr iafter,
     instr_at (ibefore ++ [ instr ] ++ iafter) (length ibefore) instr.
   Proof.
@@ -1232,27 +1208,28 @@ Ltac stk_one_step :=
     intros.
     repeat (rewrite <- app_length; rewrite app_assoc; try apply instr_at_ibefore_1).
   Qed.
-  Lemma instrs_at_ibefore_1: forall ibefore instrs iafter i,
+  Lemma instrs_at_ibefore_1: forall ibefore instrs instr iafter i,
     (i < length instrs)%nat ->
-    instr_at (ibefore ++ instrs ++ iafter) (length ibefore + i)%nat (nth i instrs StkUnreachable).
+    instr = (nth i instrs StkUnreachable) ->
+    instr_at (ibefore ++ instrs ++ iafter) (length ibefore + i)%nat instr.
   Proof.
     econstructor. rewrite app_nth2_plus. rewrite app_nth1; auto.
   Qed.
 
   (* Thank compilerverif for the auto and autorewrite *)
   Hint Resolve instr_at_ibefore_1 instr_at_ibefore_2 instr_at_ibefore_3 : instrs.
-
   (* Normalize instr_at: make instrs and pc addition to be rassoc. Split len(l1++l2). *)
-  Hint Rewrite app_assoc_reverse app_length plus_assoc_reverse : instrs.
+  Hint Rewrite app_assoc_reverse app_length plus_assoc_reverse Nat.add_0_r app_nil_l: instrs.
 
   Open Scope nat.
   (* instrs_at (done0 + done1 + rest) (len done0 + len done1 + x) y
      ===>
      instrs_at (done3         + rest) (len done3             + x) y
    *)
+Check plus_assoc.
   Ltac instr_at_fold_one :=
     try match goal with
-    | [ |- instrs_at (?done ++ _ ++ _) (length ?done + (?l1 + ?l2)) _ ] => rewrite plus_assoc (*rewrite (plus_assoc (length ?done) l1 l2)*)
+    | [ |- instrs_at (?done ++ _ ++ _) (length ?done + (?l1 + ?l2)) _ ] => rewrite (plus_assoc (length done) l1 l2) (*rewrite (plus_assoc (length ?done) l1 l2)*)
     end;
     match goal with
     | [ |- (instrs_at (?a ++ ?b ++ _)) (length ?a + ?l) _ ] =>
@@ -1267,11 +1244,11 @@ Ltac stk_one_step :=
   (* instrs_at (l1 ++ ... ++ lk ++ rest) (len l1 + ... + len lk) lk
      ===> T
   *)
-  Ltac instr_at_fold_all :=
+  Ltac instr_at_auto :=
     repeat match goal with
     | [ |- instrs_at (_ ++ _ ++ _) (((?a0 + ?a1) + ?b) + ?c) _ ] => rewrite <- (plus_assoc (a0+a1) b c)
     end;
-    repeat instr_at_fold_one; constructor; auto with instrs.
+    repeat instr_at_fold_one; (apply instrs_at_nil || constructor); auto with instrs.
 
   (*
     stk_step (done0 ++ done1 ++ rest) (len done0 + len done1 + _, _, _) _
@@ -1311,128 +1288,251 @@ Ltac stk_one_step :=
       autorewrite with instrs. econstructor.
     - autorewrite with instrs.
       eapply trc_trans. apply IHe1. auto. constructor; auto. stk_step_fold_one. 
-      eapply trc_trans. apply IHe2. auto. instr_at_fold_all. stk_step_fold_one. 
+      eapply trc_trans. apply IHe2. auto. instr_at_auto. stk_step_fold_one. 
       econstructor. apply StkStep_Binary. eauto with instrs.
       autorewrite with instrs. econstructor.
   Qed.
 
-  Import Small_step.
-
   (* Now it's to prove simulation relation. *)
-  Module CompilCorrectStep.
     (* refinement against the step relation
 
       hard: how to say we're matching a loop?
 
      *)
-  End CompilCorrectStep.
 
-  Module CompilCorrectCps.
-    Import Small_cps.
-    Arguments app : simpl never.
-    Open Scope nat.
-    Definition pcadd (pc : nat) (offset : Z) : nat := Z.to_nat (Z_of_nat pc + offset)%Z.
+  Import Small_cps.
+  Arguments app : simpl never.
+  Open Scope nat.
 
-    (* Effect of executing all the way from `pc` is same as executing the continuation. *)
-    Inductive cont_at (instrs : list stack_instr) : nat -> Cont -> Prop :=
-    | RelateContPc_Cont_Stop: forall pc,
-      instr_at instrs pc StkHalt ->
-      cont_at instrs pc Cont_Stop
-    | RelateContPc_Cont_Seq: forall pc c k cinstrs,
-      cinstrs = compile_cmd_to_stk c ->
-      instrs_at instrs pc cinstrs ->
-      cont_at instrs (pc + length cinstrs) k ->
-      cont_at instrs pc (Cont_Seq c k)
-    | RelateContPc_Cont_While: forall pc be body k offset whileinstrs,
-      whileinstrs = compile_cmd_to_stk (While be body) ->
-      instr_at instrs pc (StkCondGoto offset) ->
-      instrs_at instrs (pcadd pc offset) whileinstrs ->
-      cont_at instrs (pcadd pc offset + length whileinstrs) k ->
-      cont_at instrs pc (Cont_While be body k)
-    (* Without RelateContPc_Goto we cannot prove simulation for If *)
-    | RelateContPc_Goto: forall pc k offset,
-      instrs_at instrs pc [ StkConst 1 ; StkCondGoto offset ] ->
-      cont_at instrs (pcadd pc (1 + offset)) k ->
-      cont_at instrs pc k.
+  (* Effect of executing all the way from `pc` is same as executing the continuation. *)
+  Inductive cont_at (instrs : list stack_instr) : nat -> Cont -> Prop :=
+  | RelateContPc_Cont_Stop: forall pc,
+    instr_at instrs pc StkHalt ->
+    cont_at instrs pc Cont_Stop
+  | RelateContPc_Cont_Seq: forall pc c k cinstrs,
+    cinstrs = compile_cmd_to_stk c ->
+    instrs_at instrs pc cinstrs ->
+    cont_at instrs (pc + length cinstrs) k ->
+    cont_at instrs pc (Cont_Seq c k)
+  | RelateContPc_Cont_While: forall pc be body k offset whileinstrs,
+    whileinstrs = compile_cmd_to_stk (While be body) ->
+    instrs_at instrs pc [ StkConst 1 ] ->
+    instrs_at instrs (pc + 1) [ StkCondGotoBw offset ] ->
+    instrs_at instrs (pc + 1 - offset) whileinstrs ->
+    cont_at instrs (pc + 1 - offset + length whileinstrs) k ->
+    cont_at instrs pc (Cont_While be body k)
+  (* Without RelateContPc_Goto we cannot prove simulation for If *)
+  | RelateContPc_Goto: forall pc k bwdir offset,
+    instrs_at instrs pc [ StkConst 1 ] ->
+    instrs_at instrs (pc + 1) [ StkCondGoto bwdir offset ] ->  (* this phrasing makes automation easier *)
+    cont_at instrs (condgoto_dst 1 bwdir offset (pc + 1)) k ->
+    cont_at instrs pc k.
 
-    (* Since one step of cps incorporates many steps of stk e.g. expr evaluation,
-       we do not relate the intermediate steps; thus estk is nil.
+  (* Since one step of cps incorporates many steps of stk e.g. expr evaluation,
+     we do not relate the intermediate steps; thus estk is nil.
 
-        cps ----------------------------------> cps'
-         ~                                       ~
-        stk --> stk0 --> stk1 --> ... --------> stk'
-     *)
-    Inductive relate_cps_stk (instrs : list stack_instr) : cps_state -> stk_state -> Prop :=
-    | MkRelateCpsStk: forall va c k pc vstk cinstrs,
-      va = vstk ->  
-      cinstrs = compile_cmd_to_stk c ->
-      instrs_at instrs pc cinstrs ->
-      cont_at instrs (pc + length cinstrs) k ->
-      relate_cps_stk instrs (va, c, k) (pc, vstk, nil).
+      cps ----------------------------------> cps'
+       ~                                       ~
+      stk --> stk0 --> stk1 --> ... --------> stk'
+   *)
+  Inductive relate_cps_stk (instrs : list stack_instr) : cps_state -> stk_state -> Prop :=
+  | MkRelateCpsStk: forall va c k pc vstk cinstrs,
+    va = vstk ->  
+    cinstrs = compile_cmd_to_stk c ->
+    instrs_at instrs pc cinstrs ->
+    cont_at instrs (pc + length cinstrs) k ->
+    relate_cps_stk instrs (va, c, k) (pc, vstk, nil).
 
-    Hint Constructors instr_at instrs_at : instrs.
+  Hint Constructors instr_at instrs_at : instrs.
 
-    Lemma instr_len_single: forall instr : stack_instr, 1 = length [ instr ].
-    Proof. cbv; auto. Qed.
+  Lemma instr_len_single: forall instr : stack_instr, 1 = length [ instr ].
+  Proof. cbv; auto. Qed.
 
-    Lemma stepwise_refinement_cps_stk: forall instrs cs ss,
-      relate_cps_stk instrs cs ss ->
-      forall cs',
-        cps_step cs cs' ->
-        exists ss',
-          (stk_step instrs)^* ss ss' /\ relate_cps_stk instrs cs' ss'.
-    Proof.
-      invert 2; invert H; simplify.
-      - (* computation of Assign *)
-        invert H6.
-        autorewrite with instrs. eexists. split.
-        + eapply trc_trans.
-          apply compile_exp_ok; auto with instrs.
-          eapply TrcFront. apply StkStep_StoreVar. auto with instrs.
-          econstructor.
-        + econstructor; auto. 
-          rewrite app_assoc. rewrite app_assoc.
-          rewrite <- (app_nil_l iafter).
-          econstructor. repeat rewrite app_length. auto.
+  (* Thank compilerverif for the auto and autorewrite *)
+  Hint Resolve instr_at_ibefore_2  : instrsx.
+
+  Arguments Nat.add: simpl never.
+
+  Lemma instrs_at_instr_at: forall instrs instr pc,
+    instrs_at instrs pc [ instr ] -> instr_at instrs pc instr.
+  Proof.
+    intros. invert H. auto with instrs.
+  Qed.
+
+  (* See stepwise refinement proof before looking the following lemma and explanations.
+
+     Since we've introduced a RelateContPc_Goto ...
+   *)
+  Lemma cont_at_seq_norm: forall instrs pc c k vstk,
+    cont_at instrs pc (Cont_Seq c k) ->
+    exists pc',
+      (stk_step instrs)^* (pc, vstk, nil) (pc', vstk, nil) /\
+      instrs_at instrs pc' (compile_cmd_to_stk c) /\
+      cont_at instrs (pc' + length (compile_cmd_to_stk c)) k.
+  Proof.
+    induct 1; simplify.
+    - exists pc. split. apply TrcRefl. split; auto.
+    - destruct IHcont_at as (pc' & Hstep & Hic).
+      exists pc'; split; auto.
+      eapply trc_trans; [|eapply Hstep].
+      econstructor. eapply StkStep_Const. eauto using instrs_at_instr_at.
+      econstructor. eapply StkStep_CondGoto. eauto using instrs_at_instr_at.
+      econstructor.
+  Qed.
+
+  Lemma cont_at_while_norm: forall instrs pc be body k vstk,
+    cont_at instrs pc (Cont_While be body k) ->
+    exists pc',
+      (stk_step instrs)^* (pc, vstk, nil) (pc', vstk, nil) /\
+      instrs_at instrs pc' (compile_cmd_to_stk (While be body)) /\
+      cont_at instrs (pc' + length (compile_cmd_to_stk (While be body))) k.
+  Proof.
+    induct 1; simplify.
+    - clear IHcont_at. invert H2.
+      exists (length ibefore). (* note I cannot write  pc-offset  here because possible nat underflow *)
+      split. autorewrite with instrs in *.
+      eapply TrcFront. eapply StkStep_Const. apply instrs_at_instr_at. eassumption.
+      eapply TrcFront. eapply StkStep_CondGoto. apply instrs_at_instr_at. eassumption.
+      unfold condgoto_dst. simplify. rewrite H. apply TrcRefl.
+      split. auto with instrs. rewrite H. assumption.
+    - destruct IHcont_at as (pc' & Hstep & Hic).
+      exists pc'; split; auto.
+      eapply trc_trans; [|eapply Hstep].
+      econstructor. eapply StkStep_Const. eauto using instrs_at_instr_at.
+      econstructor. eapply StkStep_CondGoto. eauto using instrs_at_instr_at.
+      econstructor.
+  Qed.
+
+Axiom Assume_Assert_TODO: False. 
+(* TODO: clarify difference between instr_at_auto and auto with instrs *)
+  Lemma stepwise_refinement_cps_stk: forall instrs cs ss,
+    relate_cps_stk instrs cs ss ->
+    forall cs',
+      cps_step cs cs' ->
+      exists ss',
+        (stk_step instrs)^* ss ss' /\ relate_cps_stk instrs cs' ss'.
+  Proof.
+    invert 2; invert H.
+    - (* computation of Assign *)
+      simplify. invert H6. autorewrite with instrs in *.
+      eexists.
+      split.
+      + (* next stk state: pc+1, vstk', estk *)
+        eapply trc_trans.
+        apply compile_exp_ok; auto with instrs.
+        eapply TrcFront. apply StkStep_StoreVar. auto with instrs.
+        econstructor.
+      + (* relate *)
+        econstructor; auto.
+        instr_at_auto.
+        autorewrite with instrs in *. auto.
+    - (* computation of If *)
+      simplify. invert H6. autorewrite with instrs in *.
+      (* since then / else clauses have different next states, need to eexists early *)
+      cases (value_to_bool (eval_exp vstk be)); eexists.
+      + split. (* then *)
+        * (* next stk state: after execute condgoto *)
+          eapply trc_trans. apply compile_exp_ok; auto with instrs.
+          eapply TrcFront. eapply StkStep_CondGoto; apply instr_at_ibefore_2. (* why cannot do auto here? *)
+          unfold condgoto_dst; rewrite Heq.
+          apply TrcRefl.
+        * (* relate *)
+          econstructor; auto.
+          instr_at_auto.
           autorewrite with instrs in *. assumption.
-      - invert H6.
-        autorewrite with instrs. 
-        cases (value_to_bool (eval_exp vstk be)); try rewrite Heq in *; eexists.
-
-        + split. (* then *)
-          *
-            eapply trc_trans. apply compile_exp_ok; auto with instrs.
-            eapply TrcFront. eapply StkStep_CondGoto; auto with instrs.
-              rewrite Heq.
-              repeat (rewrite Z2Nat.inj_add in *; try rewrite Heq; try lia; try rewrite Nat2Z.id).
-              replace (Z.to_nat 1) with 1 by (cbv; auto).
-            apply TrcRefl.
-          *
-            econstructor; auto. autorewrite with instrs.
-            instr_at_fold_all.
-            autorewrite with instrs in *. assumption.
-        + split. (* else *)
-          * 
-            eapply trc_trans. apply compile_exp_ok; auto with instrs.
-            eapply TrcFront. eapply StkStep_CondGoto; auto with instrs.
-              rewrite Heq.
-              repeat (rewrite Z2Nat.inj_add in *; try rewrite Heq; try lia; try rewrite Nat2Z.id).
-              replace (Z.to_nat 1) with 1 by (cbv; auto).
-            apply TrcRefl.
-          *
-            econstructor; auto. autorewrite with instrs.
-            instr_at_fold_all.
-
-            eapply RelateContPc_Goto. instr_at_fold_all.
-              unfold pcadd.
-              repeat (rewrite Z2Nat.inj_add in *; try rewrite Heq; try lia; try rewrite Nat2Z.id).
-              replace (Z.to_nat 1) with 1 by (cbv; auto).
-              repeat rewrite plus_assoc.
-            autorewrite with instrs in *. assumption.
-      - invert H. (* seems should make pc Z or offset nat *)
-  End CompilCorrectCps.
-
-End Stack_machine
+      + split. (* else *)
+        * (* next stk state: after execute condgoto *)
+          eapply trc_trans. apply compile_exp_ok; auto with instrs.
+          eapply TrcFront. eapply StkStep_CondGoto; apply instr_at_ibefore_2.
+          unfold condgoto_dst; rewrite Heq.
+          apply TrcRefl.
+        * (* relate *)
+          econstructor; auto.
+          instr_at_auto.
+          eapply RelateContPc_Goto. instr_at_auto. instr_at_auto.
+          unfold condgoto_dst; simplify.
+          autorewrite with instrs in *. assumption.
+    - (* computation of while-false *)
+      simplify. invert H7.
+      autorewrite with instrs in *.
+      eexists. split.  
+      * (* nest stk state: pc+lencode(while..), vstk, estk *)
+        eapply trc_trans. apply compile_exp_ok; auto with instrs.
+        eapply TrcFront. eapply StkStep_Unary; auto with instrs.
+        eapply TrcFront. eapply StkStep_CondGoto; apply instr_at_ibefore_3.
+        unfold condgoto_dst. simplify. rewrite H1. simplify.
+        apply TrcRefl.
+      * (* relate *)
+        econstructor; auto.
+        instr_at_auto.
+        autorewrite with instrs in *. assumption.
+    - exfalso. apply Assume_Assert_TODO. (* TODO assert *)
+    - (* computation of assume *)
+      simplify. invert H6.
+      eexists. split.
+      * (* next stk state *)
+        eapply TrcFront. eapply StkStep_Noop. auto with instrs.
+        apply TrcRefl.
+      * (* relate *)
+        econstructor; auto.
+        instr_at_auto.
+        autorewrite with instrs in *. assumption.
+    - (* resumption for cont_seq *)
+      simplify. invert H6.
+      autorewrite with instrs in *.
+      apply cont_at_seq_norm with (vstk := vstk) in H7.
+      destruct H7 as (pc' & Hstep & Hiat & Hcat).
+      eexists. split.
+      + apply Hstep.
+      + econstructor; auto.
+    - (* resumption for while *)
+      simplify. invert H6.
+      autorewrite with instrs in *.
+      apply cont_at_while_norm with (vstk := vstk) in H7.
+      destruct H7 as (pc' & Hstep & Hiat & Hcat).
+      eexists. split.
+      + apply Hstep.
+      + econstructor; auto.
+    - (* focusing for seq *)
+      simplify. invert H6.
+      autorewrite with instrs in *.
+      eexists. split.
+      + apply TrcRefl.
+      + econstructor; auto.
+        instr_at_auto.
+        econstructor; auto. instr_at_auto. 
+        autorewrite with instrs in *. assumption.
+    - (* focusing for while *)
+      simplify. invert H7.
+      eexists. split.
+      + (* after going into body *)
+        autorewrite with instrs in *.
+        eapply trc_trans. apply compile_exp_ok; auto with instrs.
+        eapply TrcFront. eapply StkStep_Unary; auto with instrs.
+        eapply TrcFront. eapply StkStep_CondGoto; eapply instr_at_ibefore_3.
+        unfold condgoto_dst. simplify. rewrite H1. simplify.
+        apply TrcRefl.
+      + econstructor; auto.
+        { autorewrite with instrs in *. instr_at_auto. }
+        econstructor; auto.
+        { autorewrite with instrs in *. instr_at_auto. }
+        { autorewrite with instrs in *. instr_at_auto. }
+        instr_at_auto. lia. autorewrite with instrs in *. simplify.
+        repeat rewrite app_length. simplify.
+(* WTF this *)
+replace   (Datatypes.length ibefore +
+   (Datatypes.length (compile_exp_to_stk be) +
+    (1 + (1 + (Datatypes.length (compile_cmd_to_stk body) + 1)))) -
+   (1 +
+    (Datatypes.length (compile_cmd_to_stk body) + (1 + (1 + Datatypes.length (compile_exp_to_stk be))))) +
+   (Datatypes.length (compile_exp_to_stk be) +
+    (1 + (1 + (Datatypes.length (compile_cmd_to_stk body) + (1 + 1))))))
+with (Datatypes.length ibefore +
+        (Datatypes.length (compile_exp_to_stk be) +
+         (1 + (1 + (Datatypes.length (compile_cmd_to_stk body) + (1 + 1)))))) by lia.
+        assumption.
+  Qed.
+End Stack_machine.
 
 Module Unused.
   (* example: how to do fmap normalization *)

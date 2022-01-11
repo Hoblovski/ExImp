@@ -39,8 +39,7 @@ Module IMPLang.
   | Seq (c1 c2 : Cmd)
   | If (be : Exp) (th el : Cmd)
   | While (be : Exp) (body : Cmd)
-  | Assert (a : valuation -> bool)
-  | Assume (a : valuation -> bool).
+  | Assert (be : Exp).
 
   Definition to_bool {A B} (s : sumbool A B) := if s then true else false.
 
@@ -123,12 +122,9 @@ Module Big_step.
     eval va0 body va1 ->
     eval va1 (While be body) va2 ->
     eval va0 (While be body) va2
-  | Eval_Assert: forall va0 a,
-    a va0 = true ->
-    eval va0 (Assert a) va0
-  (* Assume behave like no-ops *)
-  | Eval_Assume: forall va0 a,
-    eval va0 (Assume a) va0.
+  | Eval_Assert: forall va be,
+    value_to_bool (eval_exp va be) = true ->
+    eval va (Assert be) va.
 
 
   Example bigstep_ex0: forall va va', eval va ex0_code va' ->
@@ -185,11 +181,9 @@ Module Small_step.
   | Step_While1: forall va be body,
     value_to_bool (eval_exp va be) = true ->
     step (va, (While be body)) (va, Seq body (While be body))
-  | Step_Assert: forall va a,
-    a va = true ->
-    step (va, (Assert a)) (va, Skip)
-  | Step_Assume: forall va a,
-    step (va, (Assume a)) (va, Skip).
+  | Step_Assert: forall va be,
+    value_to_bool (eval_exp va be) = true ->
+    step (va, (Assert be)) (va, Skip).
 
   Definition step_trsys_with_init (va : valuation) (code : Cmd) : trsys step_state := {|
     Initial := fun x => x = (va, code);
@@ -333,7 +327,6 @@ Module Small_step.
       eapply trc_trans. apply multistep_seqctx. eauto.
       econstructor. econstructor. assumption.
     + econstructor...
-    + econstructor...
   Qed.
 
 (* CONFUSED: where does these all JMeq come from? *)
@@ -351,7 +344,6 @@ Module Small_step.
     + invert H0...
     + invert H0...
     + invert H0...
-    + invert H...
   Qed.
 
   Theorem small_to_big: forall code va va',
@@ -427,11 +419,9 @@ Module Small_cps.
   | CpsStep_While0: forall va be body k,
     value_to_bool (eval_exp va be) = false ->
     cps_step (va, (While be body), k) (va, Skip, k)
-  | CpsStep_Assert: forall va a k,
-    a va = true ->
-    cps_step (va, (Assert a), k) (va, Skip, k)
-  | CpsStep_Assume: forall va a k,
-    cps_step (va, (Assume a), k) (va, Skip, k)
+  | CpsStep_Assert: forall va be k,
+    value_to_bool (eval_exp va be) = true ->
+    cps_step (va, (Assert be), k) (va, Skip, k)
   (* resumption *)
   | CpsStep_SkipSeq: forall va c k,
     cps_step (va, Skip, Cont_Seq c k) (va, c, k)
@@ -595,7 +585,6 @@ Module Small_cps.
       + eapply TrcFront. apply CpsStep_While1. equality. apply IHeval1.
       + econstructor. econstructor. apply IHeval2.
     - idtac...
-    - idtac...
   Qed.
 
 (* Now comes the execution of continuations.
@@ -670,7 +659,6 @@ Module Small_cps.
     eval va0 (cont_apply c0 k0) va2.
   Proof with (repeat (try eassumption; econstructor)).
     induct 1%nat; simplify.
-    - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple...
     - rewrite cont_apply_split in *. bs_simple...
@@ -843,11 +831,9 @@ Module IMPHoare.
       himply (andh inv (fun va => value_to_bool (eval_exp va be) = false)) q ->
       hoare_triple (andh inv (fun va => value_to_bool (eval_exp va be) = true)) body inv ->
       hoare_triple p (While be body) q
-    | HT_Assert: forall p a,
-      himply p (fun va => a va = true) ->
-      hoare_triple p (Assert a) p
-    | HT_Assume: forall p a,
-      hoare_triple p (Assume a) (andh p (fun va => a va = true))
+    | HT_Assert: forall p be,
+      himply p (fun va => value_to_bool (eval_exp va be) = true) ->
+      hoare_triple p (Assert be) p
     (* meta transformation *)
     | HT_Conseq: forall p q p' q' c,
       himply p' p ->
@@ -898,11 +884,9 @@ Module IMPHoare.
     | HT_While: forall inv be body,
       hoare_triple (andh inv (hprop_bexp be)) body inv ->
       hoare_triple inv (While be body) (andh inv (noth (hprop_bexp be)))
-    | HT_Assert: forall p a,
-      himply p (fun va => a va = true) ->
-      hoare_triple p (Assert a) p
-    | HT_Assume: forall p a,
-      hoare_triple p (Assume a) (andh p ((fun va => a va = true)))
+    | HT_Assert: forall p be,
+      himply p (fun va => value_to_bool (eval_exp va be) = true) ->
+      hoare_triple p (Assert be) p
     (* meta transformation *)
     | HT_Conseq: forall p q p' q' c,
       hoare_triple p c q ->
@@ -952,20 +936,11 @@ Module IMPHoare.
           intuition.
     Qed.
 
-    (* This could be made computable, but that's not the focus for proofs. *)
-    Fixpoint assume_free (c : Cmd) : Prop :=
-    match c with
-    | Skip => True
-    | Assign x e => True
-    | Seq c1 c2 => assume_free c1 /\ assume_free c2
-    | If be th el => assume_free th /\ assume_free el
-    | While be body => assume_free body
-    | Assert a => True
-    | Assume a => False
-    end.
-
     Import Big_step.
-    Theorem hoare_sound_fail: forall p c q,
+    (* In the previous versions we have Assume in Imp which render Hoare Logic Unsound.
+     * So we needed a precondition like `assume_free`.
+     * Now we've stripped assume from raw Hoare Logic. *)
+    Theorem hoare_sound: forall p c q,
       hoare_triple p c q ->
       forall va va',
         p va ->
@@ -975,45 +950,15 @@ Module IMPHoare.
       induct 1%nat; simplify;
         try (bs_simple; assumption).
       - invert H2. cases (value_to_bool (eval_exp va be)).
-        + eapply IHhoare_triple1; eauto. rewrite <- andh_sem. eauto.
-        + eapply IHhoare_triple2; eauto. rewrite <- andh_sem. rewrite <- hprop_eval_false. eauto.
-      - invert H2.
-        eauto 6.
-      - induct H1; simplify. (* induction on the number of iterations *)
-        + rewrite <- andh_sem. split; eauto. rewrite <- hprop_eval_false; eauto.
-        + apply (IHeval2 be body); eauto.
-          eapply IHhoare_triple; eauto.
-          rewrite <- andh_sem. split; eauto.
-      - invert H1. eauto.
-      - invert H0. rewrite <- andh_sem. admit. (* assumes make hoare unsound! *)
-      - eapply himply_sem; eauto.
-        (* during proof for this subgoal I realized I wrote the himply in HT_Conseq in the wrong order... *)
-    Abort.
-
-    Theorem hoare_sound: forall p c q,
-      assume_free c ->
-      hoare_triple p c q ->
-      forall va va',
-        p va ->
-        eval va c va' ->
-        q va'.
-    Proof.
-      induct 1%nat; simplify;
-        try (bs_simple; assumption).
-      - invert H1. cases (value_to_bool (eval_exp va be)).
         + eapply IHhoare_triple1; eauto. intuition. rewrite <- andh_sem. eauto.
         + eapply IHhoare_triple2; eauto. intuition. rewrite <- andh_sem. rewrite <- hprop_eval_false. eauto.
-      - invert H1.
-        eapply IHhoare_triple2; eauto. intuition.
-        eapply IHhoare_triple1; eauto. intuition.
-      - induct H2; simplify. (* induction on the number of iterations *)
+      - invert H2.
+        eauto.
+      - induct H1; simplify. (* induction on the number of iterations *)
         + rewrite <- andh_sem. split; eauto. rewrite <- hprop_eval_false; eauto.
-        + specialize (IHhoare_triple H).
-          assert (inv va1). { eapply IHhoare_triple; eauto. rewrite <- andh_sem; eauto. }
-          specialize (IHeval2 H3).
-          apply (IHeval2 body H be); eauto.
-      - invert H2. eauto.
-      - intuition.
+        + assert (inv va1). { eapply IHhoare_triple; eauto. rewrite <- andh_sem; eauto. }
+          apply (IHeval2 be body); eauto. (* why must this apply have args *)
+      - invert H1. eauto.
       - eapply himply_sem; eauto.
     Qed.
     (* Of course we cannot have a completeness theorem for hoare logic... *)
@@ -1022,27 +967,6 @@ Module IMPHoare.
 
   Module HoareAnnot.
     (* Annotated programs make vcgen possible. They are called 'decorated programs' in SF. *)
-    Inductive AnnotCmd :=
-    | ASkip
-    | AAssign (x : var) (e : Exp)
-    | ASeq (c1 c2 : AnnotCmd)
-    | AIf (be : Exp) (th el : AnnotCmd)
-    | AWhile (inv : valuation -> Prop) (be : Exp) (body : AnnotCmd)
-    | AAssert (a : valuation -> bool)
-    | AAssume (a : valuation -> bool).
-
-    (* to connect annotated commands and original commands *)
-    Fixpoint strip_annot (ac : AnnotCmd) : Cmd :=
-      match ac with
-       | ASkip => Skip
-       | AAssign x e => Assign x e
-       | ASeq c1 c2 => Seq (strip_annot c1) (strip_annot c2)
-       | AIf be th el => If be (strip_annot th) (strip_annot el)
-       | AWhile inv be body => While be (strip_annot body)
-       | AAssert a => Assert a
-       | AAssume a => Assume a
-      end.
-
     (* TODO: wlp *)
   End HoareAnnot.
 End IMPHoare.
@@ -1162,19 +1086,17 @@ Module Stack_machine.
       compile_cmd_to_stk el ++
       [ StkConst 1 ] ++
       [ StkCondGotoFw (1 + length (compile_cmd_to_stk th)) ] ++
-      compile_cmd_to_stk th 
+      compile_cmd_to_stk th
     | While be body =>
       compile_exp_to_stk be ++
       [ StkUnary Lnot ] ++
       [ StkCondGotoFw (1 + length (compile_cmd_to_stk body) + 1 + 1) ] ++
-      compile_cmd_to_stk body ++ 
-      [ StkConst 1 ] ++ 
+      compile_cmd_to_stk body ++
+      [ StkConst 1 ] ++
       [ StkCondGotoBw (1 + length (compile_cmd_to_stk body) + 1 + 1 + length (compile_exp_to_stk be)) ]
       (* This writing makes automation easier *)
     | Assert a =>
       [ StkNoop ] (* TODO: assert previously should use embedded language i.e. Exp than valuation -> bool *)
-    | Assume a =>
-      [ StkNoop ]
     end.
 
   Compute compile_cmd_to_stk ex0_code.
@@ -1186,7 +1108,7 @@ Module Stack_machine.
   Lemma instrs_at_nil: forall ibefore iafter,
     instrs_at (ibefore ++ iafter) (length ibefore) [].
   Proof.
-    simplify. rewrite <- (app_nil_r ibefore). rewrite <- app_assoc. 
+    simplify. rewrite <- (app_nil_r ibefore). rewrite <- app_assoc.
     econstructor. rewrite app_length. auto.
   Qed.
   Lemma instr_at_ibefore_1: forall ibefore instr iafter,
@@ -1283,12 +1205,12 @@ Check plus_assoc.
     - econstructor. eapply StkStep_LoadVar. eauto with instrs.
       econstructor.
     - autorewrite with instrs.
-      eapply trc_trans. apply IHe. auto. constructor. auto. stk_step_fold_one. 
+      eapply trc_trans. apply IHe. auto. constructor. auto. stk_step_fold_one.
       econstructor. eapply StkStep_Unary. eauto with instrs.
       autorewrite with instrs. econstructor.
     - autorewrite with instrs.
-      eapply trc_trans. apply IHe1. auto. constructor; auto. stk_step_fold_one. 
-      eapply trc_trans. apply IHe2. auto. instr_at_auto. stk_step_fold_one. 
+      eapply trc_trans. apply IHe1. auto. constructor; auto. stk_step_fold_one.
+      eapply trc_trans. apply IHe2. auto. instr_at_auto. stk_step_fold_one.
       econstructor. apply StkStep_Binary. eauto with instrs.
       autorewrite with instrs. econstructor.
   Qed.
@@ -1337,7 +1259,7 @@ Check plus_assoc.
    *)
   Inductive relate_cps_stk (instrs : list stack_instr) : cps_state -> stk_state -> Prop :=
   | MkRelateCpsStk: forall va c k pc vstk cinstrs,
-    va = vstk ->  
+    va = vstk ->
     cinstrs = compile_cmd_to_stk c ->
     instrs_at instrs pc cinstrs ->
     cont_at instrs (pc + length cinstrs) k ->
@@ -1403,7 +1325,7 @@ Check plus_assoc.
       econstructor.
   Qed.
 
-Axiom Assume_Assert_TODO: False. 
+Axiom Assume_Assert_TODO: False.
 (* TODO: clarify difference between instr_at_auto and auto with instrs *)
   Lemma stepwise_refinement_cps_stk: forall instrs cs ss,
     relate_cps_stk instrs cs ss ->
@@ -1455,7 +1377,7 @@ Axiom Assume_Assert_TODO: False.
     - (* computation of while-false *)
       simplify. invert H7.
       autorewrite with instrs in *.
-      eexists. split.  
+      eexists. split.
       * (* nest stk state: pc+lencode(while..), vstk, estk *)
         eapply trc_trans. apply compile_exp_ok; auto with instrs.
         eapply TrcFront. eapply StkStep_Unary; auto with instrs.
@@ -1467,16 +1389,6 @@ Axiom Assume_Assert_TODO: False.
         instr_at_auto.
         autorewrite with instrs in *. assumption.
     - exfalso. apply Assume_Assert_TODO. (* TODO assert *)
-    - (* computation of assume *)
-      simplify. invert H6.
-      eexists. split.
-      * (* next stk state *)
-        eapply TrcFront. eapply StkStep_Noop. auto with instrs.
-        apply TrcRefl.
-      * (* relate *)
-        econstructor; auto.
-        instr_at_auto.
-        autorewrite with instrs in *. assumption.
     - (* resumption for cont_seq *)
       simplify. invert H6.
       autorewrite with instrs in *.
@@ -1500,7 +1412,7 @@ Axiom Assume_Assert_TODO: False.
       + apply TrcRefl.
       + econstructor; auto.
         instr_at_auto.
-        econstructor; auto. instr_at_auto. 
+        econstructor; auto. instr_at_auto.
         autorewrite with instrs in *. assumption.
     - (* focusing for while *)
       simplify. invert H7.
